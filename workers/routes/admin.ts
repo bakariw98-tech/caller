@@ -9,6 +9,7 @@ import { parseCurriculumMarkdown, CurriculumParseError } from '../../src/curricu
 import { ingestCourse, StructureLostError } from '../curriculum/ingest.js';
 import { auditStructure } from '../../src/curriculum/schema.js';
 import { createBudget } from '../billing/promotional.js';
+import { mintCallToken } from '../mcp/auth.js';
 
 export const adminRoute = new Hono<{ Bindings: Env }>();
 
@@ -173,4 +174,42 @@ adminRoute.post('/api/creators/:id/publish', async (c) => {
 
   await db.prepare("UPDATE creators SET status = 'live', updated_at = ? WHERE id = ?").run(now(), creatorId);
   return c.json({ status: 'live' });
+});
+
+/**
+ * DIAGNOSTIC: mints a long-lived MCP token not bound to any real call, so a
+ * console-managed Voice Agent (which we don't control the webhook for) has
+ * something valid to authenticate with while we find out what caller context,
+ * if any, it actually passes through to a remote MCP tool. Not part of the
+ * normal call flow — a real call always mints its token from a webhook that
+ * already knows the caller. See chat / docs/XAI-API-NOTES.md.
+ */
+adminRoute.post('/api/creators/:id/diagnostic-mcp-token', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const creator = await db.prepare('SELECT * FROM creators WHERE id = ?').get<Creator>(creatorId);
+  if (!creator) return c.json({ error: 'creator not found' }, 404);
+
+  const course = await db
+    .prepare('SELECT * FROM courses WHERE creator_id = ? ORDER BY created_at DESC LIMIT 1')
+    .get<Course>(creatorId);
+  if (!course) return c.json({ error: 'creator has no course' }, 400);
+
+  const callId = id('call');
+  await db
+    .prepare(
+      `INSERT INTO calls (id, xai_call_id, creator_id, status, started_at)
+       VALUES (?, ?, ?, 'active', ?)`,
+    )
+    .run(callId, `diagnostic_${callId}`, creatorId, now());
+
+  const token = await mintCallToken(db, c.env.MCP_TOKEN_SECRET, 30 * 24 * 3600, {
+    callId,
+    creatorId,
+    customerId: null,
+    enrollmentId: null,
+    courseId: course.id,
+  });
+
+  return c.json({ token, expires_in_days: 30, note: 'Diagnostic only — not bound to a real caller.' });
 });

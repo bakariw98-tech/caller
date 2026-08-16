@@ -32,12 +32,29 @@ function error(reqId: string | number | null | undefined, code: number, message:
  */
 mcpRoute.post('/mcp', async (c) => {
   const body = (await c.req.json().catch(() => undefined)) as JsonRpcRequest | JsonRpcRequest[] | undefined;
+
+  // Diagnostic: full incoming header set, visible via `wrangler tail`, to see
+  // exactly what the console-managed agent path sends — this is genuinely
+  // undocumented territory (see chat), and the fastest way to a real answer
+  // is watching a real request rather than guessing from docs. Authorization
+  // is redacted to its first 12 chars so a real token never lands in logs.
+  const headerDump: Record<string, string> = {};
+  c.req.raw.headers.forEach((v, k) => {
+    headerDump[k] = k.toLowerCase() === 'authorization' ? `${v.slice(0, 12)}…` : v;
+  });
+  console.log('MCP request', { method: c.req.method, query: c.req.query(), headers: headerDump, body });
+
   if (!body) return c.json(error(null, -32700, 'Empty request body'), 400);
+
+  // Console-managed tool config may only expose a URL field, not custom
+  // headers — support the token as a query param too so `?token=...` works
+  // as a fallback authorization channel.
+  const auth = c.req.header('Authorization') ?? (c.req.query('token') ? `Bearer ${c.req.query('token')}` : undefined);
 
   const batch = Array.isArray(body) ? body : [body];
   const responses: unknown[] = [];
   for (const rpc of batch) {
-    const res = await handleRpc(c.env, c.req.header('Authorization'), rpc);
+    const res = await handleRpc(c.env, auth, rpc);
     if (res !== null) responses.push(res);
   }
 

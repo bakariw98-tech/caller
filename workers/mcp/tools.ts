@@ -1,5 +1,6 @@
 import type { SqlDb } from '../db/types.js';
 import { id, now } from '../../src/util/ids.js';
+import { normalizeE164 } from '../../src/xai/webhook.js';
 import type { Creator, Customer, Enrollment, Step } from '../../src/domain/types.js';
 import {
   findStepByPosition,
@@ -30,8 +31,15 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description:
       'Who you are speaking with and exactly where they are in the course: current module, lesson and ' +
       'step, what they have completed, and any problem left unresolved from an earlier call. Call this ' +
-      'first, before assuming anything about the caller.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      'first, before assuming anything about the caller. If the phone number you are speaking with is ' +
+      'visible to you, pass it as caller_phone.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        caller_phone: { type: 'string', description: "The caller's phone number, if visible to you." },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: 'get_current_step',
@@ -140,7 +148,7 @@ export interface ToolResult {
 export async function callTool(ctx: ToolContext, name: string, args: Record<string, unknown>): Promise<ToolResult> {
   switch (name) {
     case 'get_caller_state':
-      return getCallerState(ctx);
+      return getCallerState(ctx, args);
     case 'get_current_step':
       return getCurrentStep(ctx);
     case 'get_step_by_position':
@@ -189,9 +197,35 @@ const NOT_IDENTIFIED = {
     'only with material that is safe for anyone, and ask them to call from the number on their account.',
 };
 
-async function getCallerState(ctx: ToolContext): Promise<ToolResult> {
-  const customer = await loadCustomer(ctx);
-  const enrollment = await loadEnrollment(ctx);
+/**
+ * DIAGNOSTIC PATH: when this tool's session carries no bound customer_id
+ * (the console-managed agent path may not give us a per-call webhook to bind
+ * one at all — see chat), fall back to a phone number the model passes as an
+ * argument, if it has one. Read-only for now: does not persist a binding.
+ * Remove this fallback once it's confirmed whether the console path ever
+ * gives the model real caller-ID visibility to pass through.
+ */
+async function getCallerState(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+  let customer = await loadCustomer(ctx);
+  let enrollment = await loadEnrollment(ctx);
+
+  if (!customer && typeof args.caller_phone === 'string' && args.caller_phone.trim()) {
+    const phone = normalizeE164(args.caller_phone);
+    if (phone) {
+      customer =
+        (await ctx.db
+          .prepare('SELECT * FROM customers WHERE creator_id = ? AND phone_e164 = ? AND verified_at IS NOT NULL')
+          .get<Customer>(ctx.session.creator_id, phone)) ?? null;
+      if (customer) {
+        const enrollments = await ctx.db
+          .prepare('SELECT * FROM enrollments WHERE customer_id = ? ORDER BY created_at DESC LIMIT 1')
+          .get<Enrollment>(customer.id);
+        enrollment = enrollments ?? null;
+      }
+      await ctx.logEvent?.('caller_state_phone_fallback', { phone, matched: Boolean(customer) });
+    }
+  }
+
   if (!customer || !enrollment) return { data: NOT_IDENTIFIED };
 
   const current = enrollment.current_step_id ? await getStep(ctx.db, enrollment.current_step_id) : null;
