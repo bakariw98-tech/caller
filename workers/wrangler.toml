@@ -1,0 +1,35 @@
+name = "caller-coach"
+main = "index.ts"
+compatibility_date = "2026-08-16"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "caller-coach"
+database_id = "36a74a8c-1399-4c55-8a1b-cb07b1f1d9a5"
+
+[[durable_objects.bindings]]
+name = "CALL_SESSION"
+class_name = "CallSessionDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CallSessionDO"]
+
+# --- Non-secret vars. Secrets (XAI_API_KEY, MCP_TOKEN_SECRET, ADMIN_TOKEN,
+# XAI_WEBHOOK_SIGNING_SECRET) are NOT set here — see docs/DEPLOY.md, they go
+# in via `wrangler secret put` so they never end up in this file or in git. ---
+[vars]
+XAI_API_BASE = "https://api.x.ai"
+XAI_REALTIME_HOST = "api.x.ai"
+XAI_VOICE_MODEL = "grok-voice-latest"
+# Set to this Worker's real URL after the first deploy (see docs/DEPLOY.md) —
+# xAI must be able to reach both /webhooks/xai and /mcp on it.
+PUBLIC_BASE_URL = "https://caller-coach.workers.dev"
+
+PLATFORM_MIN_PRICE_PER_MINUTE_CENTS = "50"
+PLATFORM_AUDIO_COST_PER_MINUTE_CENTS = "6"
+MAX_SESSION_SECONDS = "7200"
+LOW_BALANCE_WARNING_SECONDS = "120"
+FINAL_WARNING_SECONDS = "30"
+IDLE_TIMEOUT_MS = "12000"

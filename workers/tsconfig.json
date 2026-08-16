@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023"],
+    "types": ["@cloudflare/workers-types"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true
+  },
+  "include": ["**/*.ts", "../src/curriculum/schema.ts", "../src/curriculum/parse-markdown.ts", "../src/coach/prompt.ts", "../src/domain/types.ts", "../src/util/ids.ts", "../src/xai/webhook.ts"],
+  "exclude": ["node_modules"]
+}

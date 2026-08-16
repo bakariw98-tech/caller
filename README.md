@@ -11,6 +11,19 @@ material.
 creator expertise + structured curriculum + persistent customer state + real-time voice
 ```
 
+## Two runtimes
+
+- **`src/`** — Node, Fastify, better-sqlite3. The reference implementation;
+  everything below in this README describes it.
+- **`workers/`** — Cloudflare Workers, Hono, D1, Durable Objects. A second
+  runtime for the same product, built to get a real test call reachable from
+  a public URL without standing up separate hosting. The call path (webhook,
+  live session, MCP tools, billing) is complete and D1-seeded with a working
+  demo creator; the customer self-serve and dashboard pages aren't ported yet.
+  See [docs/DEPLOY.md](docs/DEPLOY.md) to ship it and
+  [docs/CLOUDFLARE-PORT-NOTES.md](docs/CLOUDFLARE-PORT-NOTES.md) for what
+  differs from `src/` and why.
+
 ## Running it
 
 ```bash
