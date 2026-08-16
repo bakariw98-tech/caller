@@ -85,7 +85,12 @@ Three options, roughly in order of effort:
    starts working, and it already meters per second, warns at low balance, and
    hangs up at zero. That code is built and tested; it is only unreachable
    because of how this number was provisioned. Adds ~$0.013–0.014/min of
-   carrier cost (see docs/XAI-API-NOTES.md).
+   carrier cost.
+
+   Worth knowing before assuming this is blocked: the 403 that forced the
+   console path names xAI-*owned* numbers specifically, and `origin:
+   'byo_trunk'` has never actually been tried. One API call settles it. See
+   "Untested: `byo_trunk` may not be blocked" in docs/XAI-API-NOTES.md.
 3. **Change the pricing model** to per-session or per-outcome, which the
    current implementation already supports — sessions are counted exactly even
    though their duration is not.

@@ -95,3 +95,52 @@ Verified working against `POST /mcp` with JSON-RPC `initialize`, `tools/list`,
 - Signature verification must run against the **raw** request bytes. Fastify is
   configured to retain them (`src/index.ts`), since re-serialising parsed JSON
   changes key order and whitespace and fails every time.
+
+## Untested: `byo_trunk` may not be blocked (deferred, 2026-08-16)
+
+**Status: hypothesis, not a finding.** Written down so it isn't re-derived;
+nothing below has been run against the API.
+
+The 403 that pushed this project onto the console-managed path was narrower
+than it first read:
+
+```
+Provisioning SpaceXAI phone numbers via the API is not supported.
+Use the console (Voice Agents) instead.
+```
+
+"SpaceXAI phone numbers" names xAI-*owned* numbers specifically.
+`createPhoneNumber()` in `workers/xai/client.ts` hardcodes
+`origin: 'xai_provisioned'`, which is exactly what that sentence refuses — so
+**`origin: 'byo_trunk'` has never actually been attempted.** It may be
+permitted. It may equally 403; nobody has checked.
+
+Why it would matter if it works: the SIP docs describe `byo_trunk` as
+delivering a `realtime.call.incoming` webhook and letting you connect your
+own WebSocket by `call_id` — **no console agent involved**. That is the
+architecture already built and tested here (`workers/routes/webhook.ts` →
+`workers/telephony/call-router.ts` → `workers/durable-objects/call-session.ts`),
+currently unreachable only because the live number is console-managed. It
+would simultaneously restore automatic per-creator provisioning, remove the
+hand-pasted console instructions, restore caller ID (making the passcode a
+fallback rather than the only mechanism), and re-enable the per-second
+metering in `CallSessionDO` that `docs/BILLING.md` documents as impossible
+on the current path.
+
+Cheapest possible test, and the gate on all of the above: one
+`POST /v2/phone-numbers` with `origin: 'byo_trunk'` on the existing key. If
+it 403s too, the approach is dead and the remaining option is asking xAI to
+lift the account restrictions.
+
+### Entitlements vs. capabilities
+
+Worth separating, since it changes who can fix what. These failures are
+**account-tier switches on xAI's side**, not missing endpoints and not
+something a differently-scoped key reaches — the key in use already carries
+wildcard ACLs (`api-key:endpoint:*`):
+
+| Endpoint | Response | Reading |
+|---|---|---|
+| `/v1/agents` | 403 `agents endpoint is not enabled for this team` | Exists, disabled for this team |
+| `/v1/realtime/calls` | 403 `Team is not authorized to perform this action` | Exists, disabled for this team |
+| `/v2/agents`, `/v2/calls`, `/v2/usage`, `/v1/webhooks` | 404 | Do not exist under those paths |
