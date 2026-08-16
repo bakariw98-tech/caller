@@ -182,6 +182,23 @@ const PAGE = /* html */ `<!doctype html>
     <button id="btn-publish">Publish</button>
     <div id="status-publish" class="status"></div>
   </section>
+
+  <section id="s-agent">
+    <h2>6. Set up the xAI console agent</h2>
+    <p class="hint">
+      xAI's console has no API for configuring an Agent on this account, so this one paste is unavoidable —
+      but what you paste is generated from what you entered above, not written by hand. In the console,
+      open (or create) the Agent for this number, paste the box below into <strong>Instructions</strong>,
+      and paste the URL into its <strong>Tools / MCP</strong> section as a remote MCP server.
+    </p>
+    <label>Instructions</label>
+    <textarea id="agent-instructions" readonly style="min-height:14rem"></textarea>
+    <button id="btn-copy-instructions" class="secondary" type="button">Copy instructions</button>
+    <label>MCP server URL <span class="hint" style="display:inline">(valid for 1 year)</span></label>
+    <input id="agent-mcp-url" readonly>
+    <button id="btn-copy-url" class="secondary" type="button">Copy URL</button>
+    <div id="status-agent" class="status"></div>
+  </section>
 </div>
 
 <script>
@@ -328,10 +345,39 @@ const PAGE = /* html */ `<!doctype html>
       await call('/api/creators/' + creatorId + '/publish', {});
       const link = base + '/c/' + creatorSlug;
       show('publish', 'ok', '<strong>Live.</strong><div class="result">Customer sign-up page: <a href="' + link + '">' + link + '</a></div>');
+      complete('publish');
+      unlock('agent');
+      await loadAgentSetup();
     } catch (e) {
       show('publish', 'err', e.message);
     }
   };
+
+  async function loadAgentSetup() {
+    try {
+      const res = await call('/api/creators/' + creatorId + '/agent-setup', {});
+      document.getElementById('agent-instructions').value = res.instructions;
+      document.getElementById('agent-mcp-url').value = res.mcp_url;
+      show('agent', 'ok', 'Generated from what you entered above — paste both into the console.');
+    } catch (e) {
+      show('agent', 'err', 'Could not generate agent setup: ' + e.message);
+    }
+  }
+
+  function wireCopy(buttonId, fieldId) {
+    document.getElementById(buttonId).onclick = async () => {
+      const field = document.getElementById(fieldId);
+      field.select();
+      try {
+        await navigator.clipboard.writeText(field.value);
+        show('agent', 'ok', 'Copied.');
+      } catch {
+        show('agent', 'ok', 'Selected — copy with your browser\\'s usual shortcut.');
+      }
+    };
+  }
+  wireCopy('btn-copy-instructions', 'agent-instructions');
+  wireCopy('btn-copy-url', 'agent-mcp-url');
 })();
 </script>
 </body>

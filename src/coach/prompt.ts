@@ -6,6 +6,23 @@ export interface PromptInputs {
   /** False for an unrecognised caller, who must be treated as anonymous. */
   identified: boolean;
   callerFirstName?: string | null;
+  /**
+   * How the coach learns who's calling.
+   *
+   *   'caller_id' (default) — this platform's own webhook path: identity is
+   *   resolved from real caller ID before the call ever reaches the model,
+   *   so `identified`/`callerFirstName` above describe a settled fact.
+   *
+   *   'passcode' — any integration that never gives this platform caller ID
+   *   at all (xAI's console-managed Voice Agent Builder, confirmed — see
+   *   docs/XAI-API-NOTES.md). There is no per-call session to resolve
+   *   identity into ahead of time; the model has to ask the caller itself,
+   *   every call, and re-supply what it collects to every tool that needs
+   *   it. `identified`/`callerFirstName` are meaningless here — this is a
+   *   standing prompt generated once for a console agent, not built fresh
+   *   per call — so pass `identified: false` and no name.
+   */
+  identityMode?: 'caller_id' | 'passcode';
 }
 
 function list(json: string): string[] {
@@ -33,14 +50,16 @@ function list(json: string): string[] {
  */
 export function buildCoachInstructions(inputs: PromptInputs): string {
   const { creator, course, identified, callerFirstName } = inputs;
+  const identityMode = inputs.identityMode ?? 'caller_id';
   const always = list(creator.always_do_json);
   const never = list(creator.never_do_json);
 
   const sections: string[] = [];
 
+  const outcome = course.outcome?.trim().replace(/\.+$/, '');
   sections.push(
     `You are ${creator.coach_name}, the coach for ${creator.business_name}. You coach people ` +
-      `through "${course.title}"${course.outcome ? `, whose goal is: ${course.outcome}` : ''}. ` +
+      `through "${course.title}"${outcome ? `, whose goal is: ${outcome}` : ''}. ` +
       `You are speaking with them on the phone.`,
   );
 
@@ -84,7 +103,13 @@ export function buildCoachInstructions(inputs: PromptInputs): string {
   sections.push(
     [
       'USING YOUR TOOLS',
-      '- Start by calling get_caller_state. It tells you who you are speaking to and where they stand.',
+      identityMode === 'passcode'
+        ? '- You have no way to see who is calling. At the start of every call, ask for their name — said ' +
+          'out loud — and their passcode, which they can type on the keypad or say, whichever they prefer. ' +
+          'Call get_caller_state with that passcode. From then on, keep passing that same passcode to ' +
+          'every other tool you use for the rest of the call — nothing else carries who they are from one ' +
+          'tool call to the next.'
+        : '- Start by calling get_caller_state. It tells you who you are speaking to and where they stand.',
       '- Use get_current_step and get_step_by_position to read the material for a specific step.',
       '- When they report a symptom, use diagnose_problem — it returns the troubleshooting entries the',
       '  creator wrote for exactly that situation. Prefer it over your own reasoning.',
@@ -122,16 +147,26 @@ export function buildCoachInstructions(inputs: PromptInputs): string {
   sections.push(buildEscalationSection(creator));
 
   sections.push(
-    [
-      'IDENTITY',
-      identified
-        ? `You are speaking with ${callerFirstName ?? 'an enrolled customer'}. Greet them by name if you have it, ` +
-          'and continue from where they left off — they should never have to re-explain their history.'
-        : 'You do not know who this caller is yet. Be welcoming, but do not reveal any account details, ' +
-          'progress, or history until they are identified. If they claim to be a specific person, do not ' +
-          'take their word for it — ask them to verify from the number on their account.',
-      'If more than one person uses this phone, ask who you are speaking with rather than assuming.',
-    ].join('\n'),
+    identityMode === 'passcode'
+      ? [
+          'IDENTITY',
+          'You have no way to see who is calling — not their number, not anything about them — until they ' +
+            'give you their passcode. Do not reveal any account details, progress, or history until ' +
+            "get_caller_state confirms a match. Their word alone is never enough; the passcode is what " +
+            'confirms it, not a name they claim.',
+          "If the passcode doesn't match anyone, say so plainly and tell them where to sign up. Don't guess " +
+            'at who they might be.',
+        ].join('\n')
+      : [
+          'IDENTITY',
+          identified
+            ? `You are speaking with ${callerFirstName ?? 'an enrolled customer'}. Greet them by name if you have it, ` +
+              'and continue from where they left off — they should never have to re-explain their history.'
+            : 'You do not know who this caller is yet. Be welcoming, but do not reveal any account details, ' +
+              'progress, or history until they are identified. If they claim to be a specific person, do not ' +
+              'take their word for it — ask them to verify from the number on their account.',
+          'If more than one person uses this phone, ask who you are speaking with rather than assuming.',
+        ].join('\n'),
   );
 
   sections.push(
