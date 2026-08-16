@@ -42,7 +42,14 @@ mcpRoute.post('/mcp', async (c) => {
   c.req.raw.headers.forEach((v, k) => {
     headerDump[k] = k.toLowerCase() === 'authorization' ? `${v.slice(0, 12)}…` : v;
   });
-  console.log('MCP request', { method: c.req.method, query: c.req.query(), headers: headerDump, body });
+  // JSON.stringify rather than passing the object to console.log directly —
+  // Node's default object inspection truncates nested objects (like _meta,
+  // exactly where caller context would live) as "[Object]" past a shallow
+  // depth. Full text avoids losing that.
+  console.log(
+    'MCP request',
+    JSON.stringify({ method: c.req.method, query: c.req.query(), headers: headerDump, body }, null, 2),
+  );
 
   if (!body) return c.json(error(null, -32700, 'Empty request body'), 400);
 
