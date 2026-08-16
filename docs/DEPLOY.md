@@ -14,8 +14,11 @@ Deployed at **`https://caller-coach.bakariw98.workers.dev`**. Concretely:
 - A demo creator is seeded in that live database: Open Crumb Baking ("Rosa"),
   a full 3-module sourdough course (6 steps, 11 documented problems), a
   $30-minute-block trial pool, and one verified customer (Dana Whitfield,
-  `+15550100199`, 30 minutes of paid credit, mid-course with an unresolved
-  problem from a prior "call").
+  30 minutes of paid credit, mid-course with an unresolved problem from a
+  prior call, passcode `730511`).
+- A real number is live and registered: **+14095097508**, attached to an
+  xAI-console-managed Voice Agent (`agent_Rhxnni4ij3qefb4v`) — this account
+  cannot provision numbers via API, see below.
 - `wrangler deploy` has run, all four secrets are set (`XAI_API_KEY` is a real
   key), and `PUBLIC_BASE_URL` points at the real deployed URL.
 - Smoke-tested against Miniflare *and* against this real deployment — webhook
@@ -65,17 +68,31 @@ anytime with `wrangler secret put ADMIN_TOKEN` if needed.
 
 ### 3. Call it
 
-The number you registered in step 2. Call it from
-**+15550100199** — that's Dana Whitfield's number in the seed data — and the
-coach should recognize the account, greet by name, and know she's on the float
-test with an unresolved "sinks every time" problem from a prior call.
+**+14095097508.** Say your name, then say or type **730511** on the keypad
+when asked — that's Dana Whitfield's passcode in the seed data. The coach
+should greet her by name and know she's on the float test with an unresolved
+"sinks every time" problem from a prior call.
 
-Calling from any other number gets the short "you're not set up yet" anonymous
-greeting (by design — see `docs/ARCHITECTURE.md`'s identity section).
+A wrong or missing passcode gets a plain "I can't find that" — no account
+information leaks either way. See docs/BILLING.md for why identity here is
+passcode-based rather than caller-ID-based at all.
 
-## Setting up a second creator
+## Onboarding — as web pages, not curl
 
-The full onboarding surface is live:
+Both flows are real pages now, not scripts.
+
+**Customers:** `https://caller-coach.bakariw98.workers.dev/c/<creator-slug>` —
+name and phone, no SMS round trip. A passcode is generated and shown once,
+right on the confirmation page (also visible on later visits to `/account`).
+Signing up twice with the same phone returns the existing account rather than
+creating a second one.
+
+**Creators:** `https://caller-coach.bakariw98.workers.dev/onboard` — a
+five-step page: enter the admin token once, business info, paste curriculum
+(shows the structure audit inline), attach a phone number (manual — see
+above), optional trial pool, publish. Each step unlocks the next on success.
+It's a plain client for the same JSON API below; nothing it does isn't also
+reachable by script, so both remain available:
 
 ```bash
 TOKEN="<your ADMIN_TOKEN>"
@@ -84,47 +101,29 @@ BASE="https://caller-coach.bakariw98.workers.dev"
 curl -X POST "$BASE/api/creators" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{
   "business_name": "...", "coach_name": "...", "price_per_minute_cents": 75
 }'
-# -> {"id": "creator_...", ...}
-
 curl -X POST "$BASE/api/creators/<id>/curriculum" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d "$(python3 -c 'import json;print(json.dumps({"markdown": open("curriculum.md").read()}))')"
-# Returns the structure audit. Fix any "error"-severity issues before publishing.
-
-# Provision the number in the xAI console (Voice Agents) — API provisioning
-# is blocked on this account, see the section above — then register it:
 curl -X POST "$BASE/api/creators/<id>/phone-number/manual" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"e164": "+1...", "signing_secret": "<from the console, shown once>"}'
-
+  -d '{"e164": "+1...", "signing_secret": "<from the console, shown once — or any placeholder on console-managed numbers, see docs/BILLING.md>"}'
 curl -X POST "$BASE/api/creators/<id>/publish" -H "Authorization: Bearer $TOKEN"
 ```
 
+The admin token gates all of the above equally, on both the page and the raw
+API — it is a platform-wide secret (matches this being a single-creator
+deployment so far), not a per-creator login. True multi-creator self-serve
+(each creator with their own account, unable to touch another's data) is a
+separate, bigger feature this does not build.
+
 ## What isn't ported yet
 
-The call path — webhook, Durable Object, MCP tools, billing, structure audit —
-is complete and matches the Node build's behavior. Not yet ported to Workers:
+The call path — webhook, Durable Object, MCP tools, billing, structure audit,
+and now both onboarding flows — is complete. Not yet ported to Workers:
 
-- **Customer self-serve signup and the creator onboarding UI.** The Node
-  build's version of this (`src/web/`) uses SMS OTP for phone verification,
-  which is being replaced rather than ported as-is — see the "web-only
-  onboarding" plan below. For now, new customers are added directly via D1 —
-  see the pattern in `workers/scripts/seed-via-d1.ts`.
 - **The creator dashboard and curriculum-intelligence analytics.** The data is
   all being recorded (`call_events`, `escalations`, the full ledger); the
   read-side dashboard just isn't built for this runtime yet. Query D1 directly
   in the meantime (`npx wrangler d1 execute caller-coach --remote --command "..."`).
-
-## Next: web-only onboarding, no SMS
-
-Both customer and creator onboarding are moving to plain web pages, with no
-SMS provider in the loop. For customers, phone ownership gets verified by
-their **first real inbound call** rather than a texted code: signup creates
-an unverified row from just name + phone; the call router's existing
-identified-caller lookup gets extended to also match an unverified row for
-that creator + phone and flip it to verified as part of routing that first
-call. From then on it behaves exactly like today's verified-caller path —
-same wallet, same enrollment, same progress tracking. This keeps the
-"caller ID alone never grants access to someone else's account" property
-without adding a telephony vendor back into the picture. Not yet built.
+- **Per-creator accounts.** See above.
 
 ## Troubleshooting
 

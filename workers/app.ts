@@ -4,6 +4,8 @@ import { webhookRoute } from './routes/webhook.js';
 import { mcpRoute } from './routes/mcp.js';
 import { adminRoute } from './routes/admin.js';
 import { phoneNumberRoute } from './routes/phone-numbers.js';
+import { customerRoute } from './routes/customer.js';
+import { onboardingRoute } from './routes/onboarding.js';
 
 export function buildApp() {
   const app = new Hono<{ Bindings: Env }>();
@@ -14,6 +16,8 @@ export function buildApp() {
   app.route('/', mcpRoute);
   app.route('/', adminRoute);
   app.route('/', phoneNumberRoute);
+  app.route('/', customerRoute);
+  app.route('/', onboardingRoute);
 
   app.notFound((c) => c.json({ error: 'not found' }, 404));
 
