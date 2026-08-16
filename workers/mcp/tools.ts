@@ -15,6 +15,7 @@ import {
   openProblems,
 } from '../state/transitions.js';
 import { balanceSeconds } from '../billing/wallet.js';
+import { meterActivity } from '../billing/sessions.js';
 import type { McpSession } from './auth.js';
 
 export interface ToolDefinition {
@@ -181,7 +182,20 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
 interface Identity {
   customer: Customer | null;
   enrollment: Enrollment | null;
+  /** False when the wallet could not cover this session — see meterActivity. */
+  hasCredit: boolean;
+  remainingSeconds: number;
 }
+
+/** What the coach is told when an identified caller has run out of credit. */
+const OUT_OF_CREDIT = {
+  identified: true,
+  out_of_credit: true,
+  guidance:
+    'This caller has no coaching minutes left. Do not coach them further. Tell them warmly that their ' +
+    'minutes are used up, that they can top up whenever they like, and say goodbye. Do not look ' +
+    'anything else up.',
+};
 
 /**
  * Resolves who the tools are dealing with, two possible ways:
@@ -199,6 +213,11 @@ interface Identity {
  *
  * Session identity wins when both are somehow present, since it came from a
  * channel the caller cannot misstate.
+ *
+ * Resolving a caller on the passcode path also meters them: that tool call is
+ * the only evidence this platform ever gets that a call is happening, so it is
+ * where billing has to hang. The webhook path skips this, since the Durable
+ * Object is already metering that call precisely by the second.
  */
 async function resolveIdentity(ctx: ToolContext, args: Record<string, unknown>): Promise<Identity> {
   if (ctx.session.customer_id) {
@@ -206,24 +225,42 @@ async function resolveIdentity(ctx: ToolContext, args: Record<string, unknown>):
     const enrollment = ctx.session.enrollment_id
       ? await ctx.db.prepare('SELECT * FROM enrollments WHERE id = ?').get<Enrollment>(ctx.session.enrollment_id)
       : null;
-    return { customer: customer ?? null, enrollment: enrollment ?? null };
+    // Metered by the call's Durable Object, not here.
+    return { customer: customer ?? null, enrollment: enrollment ?? null, hasCredit: true, remainingSeconds: 0 };
   }
 
   const passcode = typeof args.passcode === 'string' ? args.passcode.trim() : '';
-  if (!passcode) return { customer: null, enrollment: null };
+  if (!passcode) return { customer: null, enrollment: null, hasCredit: true, remainingSeconds: 0 };
 
   const customer = await ctx.db
     .prepare('SELECT * FROM customers WHERE creator_id = ? AND passcode = ?')
     .get<Customer>(ctx.session.creator_id, passcode);
   if (!customer) {
     await ctx.logEvent?.('passcode_not_found', {});
-    return { customer: null, enrollment: null };
+    return { customer: null, enrollment: null, hasCredit: true, remainingSeconds: 0 };
   }
 
   const enrollment = await ctx.db
     .prepare('SELECT * FROM enrollments WHERE customer_id = ? AND course_id = ?')
     .get<Enrollment>(customer.id, ctx.session.course_id);
-  return { customer, enrollment: enrollment ?? null };
+
+  const creator = await ctx.db.prepare('SELECT * FROM creators WHERE id = ?').get<Creator>(ctx.session.creator_id);
+  const metered = await meterActivity(ctx.db, {
+    creatorId: ctx.session.creator_id,
+    customerId: customer.id,
+    enrollmentId: enrollment?.id ?? null,
+    centsPerMinute: creator?.price_per_minute_cents ?? 0,
+  });
+  if (metered.startedNewSession) {
+    await ctx.logEvent?.('coaching_session_started', { sessionId: metered.session.id });
+  }
+
+  return {
+    customer,
+    enrollment: enrollment ?? null,
+    hasCredit: metered.allowed,
+    remainingSeconds: metered.remainingSeconds,
+  };
 }
 
 function renderStep(detail: StepDetail) {
@@ -250,8 +287,9 @@ const NOT_IDENTIFIED = {
 };
 
 async function getCallerState(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
-  const { customer, enrollment } = await resolveIdentity(ctx, args);
+  const { customer, enrollment, hasCredit } = await resolveIdentity(ctx, args);
   if (!customer || !enrollment) return { data: NOT_IDENTIFIED };
+  if (!hasCredit) return { data: { ...OUT_OF_CREDIT, first_name: customer.name?.split(/\s+/)[0] ?? null } };
 
   const current = enrollment.current_step_id ? await getStep(ctx.db, enrollment.current_step_id) : null;
   const open = await openProblems(ctx.db, enrollment.id);
@@ -274,8 +312,9 @@ async function getCallerState(ctx: ToolContext, args: Record<string, unknown>): 
 }
 
 async function getCurrentStep(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
-  const { enrollment } = await resolveIdentity(ctx, args);
+  const { enrollment, hasCredit } = await resolveIdentity(ctx, args);
   if (!enrollment) return { data: NOT_IDENTIFIED };
+  if (!hasCredit) return { data: OUT_OF_CREDIT };
   if (!enrollment.current_step_id) {
     return { data: { message: 'This caller has not started the course. Begin at the first step.' } };
   }
@@ -379,7 +418,8 @@ async function doDiagnose(ctx: ToolContext, args: Record<string, unknown>): Prom
   const symptom = typeof args.symptom === 'string' ? args.symptom : '';
   if (!symptom.trim()) return { data: { error: 'symptom is required' }, isError: true };
 
-  const { enrollment } = await resolveIdentity(ctx, args);
+  const { enrollment, hasCredit } = await resolveIdentity(ctx, args);
+  if (!hasCredit) return { data: OUT_OF_CREDIT };
   let step: Step | null = null;
 
   if (typeof args.module === 'number' || typeof args.step === 'number') {
@@ -432,6 +472,9 @@ async function doDiagnose(ctx: ToolContext, args: Record<string, unknown>): Prom
 }
 
 async function doRecordProgress(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+  // Deliberately not gated on hasCredit: a caller whose wallet emptied
+  // mid-call should still have their progress saved. Dropping what they just
+  // achieved is a worse failure than the few free writes this allows.
   const { enrollment } = await resolveIdentity(ctx, args);
   if (!enrollment) return { data: NOT_IDENTIFIED };
 

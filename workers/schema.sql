@@ -292,3 +292,37 @@ CREATE TABLE IF NOT EXISTS webhook_events (
   event_type TEXT,
   seen_at    INTEGER NOT NULL
 );
+
+-- Metering for integrations that never hand this platform the live call.
+--
+-- The Durable Object in durable-objects/call-session.ts meters precisely, per
+-- second, off a WebSocket it owns. That path is unreachable for a number
+-- provisioned through xAI's console: no webhook, no call_id, and the MCP
+-- transport is stateless (measured: 32 `initialize` requests for 17 tool
+-- calls, and no mcp-session-id header at all), so there is no session object
+-- and no connection whose lifetime maps to the call's.
+--
+-- What is observable is tool activity: which customer, and when. Consecutive
+-- tool calls from one customer inside SESSION_GAP_SECONDS are treated as one
+-- coaching session. `charged_seconds` is what has actually been taken from
+-- the wallet; `observed_span_seconds` is first-to-last activity, which is a
+-- LOWER BOUND on true call length — a caller who talks for two minutes
+-- without triggering a tool is invisible. Billing therefore charges a floor
+-- per session and tops up as observed activity exceeds it, and the gap
+-- between charged and true duration is a known, deliberate undercharge
+-- rather than an estimate presented as fact. See docs/BILLING.md.
+CREATE TABLE IF NOT EXISTS coaching_sessions (
+  id                    TEXT PRIMARY KEY,
+  creator_id            TEXT NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+  customer_id           TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+  enrollment_id         TEXT REFERENCES enrollments(id),
+  started_at            INTEGER NOT NULL,
+  last_activity_at      INTEGER NOT NULL,
+  tool_calls            INTEGER NOT NULL DEFAULT 0,
+  charged_seconds       INTEGER NOT NULL DEFAULT 0,
+  observed_span_seconds INTEGER NOT NULL DEFAULT 0,
+  retail_cents          INTEGER NOT NULL DEFAULT 0,
+  ended_reason          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_customer ON coaching_sessions(customer_id, last_activity_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_creator ON coaching_sessions(creator_id, started_at DESC);
