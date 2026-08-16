@@ -1,6 +1,5 @@
 import type { SqlDb } from '../db/types.js';
 import { id, now } from '../../src/util/ids.js';
-import { normalizeE164 } from '../../src/xai/webhook.js';
 import type { Creator, Customer, Enrollment, Step } from '../../src/domain/types.js';
 import {
   findStepByPosition,
@@ -29,14 +28,15 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'get_caller_state',
     description:
-      'Who you are speaking with and exactly where they are in the course: current module, lesson and ' +
-      'step, what they have completed, and any problem left unresolved from an earlier call. Call this ' +
-      'first, before assuming anything about the caller. If the phone number you are speaking with is ' +
-      'visible to you, pass it as caller_phone.',
+      "Who you are speaking with and exactly where they are in the course. Call this first, before " +
+      "assuming anything about the caller. You have no way to see who is calling — ask them for their " +
+      "passcode (they got one when they signed up) and pass it here as passcode. Once you have it, keep " +
+      "passing that same passcode to every other tool for the rest of this call, since nothing else " +
+      "carries who they are from one tool call to the next.",
     inputSchema: {
       type: 'object',
       properties: {
-        caller_phone: { type: 'string', description: "The caller's phone number, if visible to you." },
+        passcode: { type: 'string', description: "The caller's passcode, once you've asked for it." },
       },
       additionalProperties: false,
     },
@@ -45,8 +45,13 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'get_current_step',
     description:
       "The full material for the step the caller is standing on: instructions, what the result should " +
-      'look like, how to know it is done, and the problems the creator says people hit here.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      "look like, how to know it is done, and the problems the creator says people hit here. Pass the " +
+      "same passcode you already collected this call.",
+    inputSchema: {
+      type: 'object',
+      properties: { passcode: { type: 'string', description: 'The passcode collected earlier this call.' } },
+      additionalProperties: false,
+    },
   },
   {
     name: 'get_step_by_position',
@@ -80,13 +85,15 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'diagnose_problem',
     description:
       'The troubleshooting the creator wrote for a symptom at a specific step. Use this whenever the ' +
-      'caller reports that something went wrong, before reasoning about the cause yourself.',
+      'caller reports that something went wrong, before reasoning about the cause yourself. Pass the ' +
+      "passcode too, if you have it — it helps find the problem for the step they're actually on.",
     inputSchema: {
       type: 'object',
       properties: {
         symptom: { type: 'string', description: 'What the caller says is happening.' },
         module: { type: 'integer', description: 'Module number, if they named one.' },
         step: { type: 'integer', description: 'Step number, if they named one.' },
+        passcode: { type: 'string', description: 'The passcode collected earlier this call, if you have it.' },
       },
       required: ['symptom'],
       additionalProperties: false,
@@ -98,7 +105,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       'Record what changed for this caller. Call it as things happen during the call, not at the end. ' +
       'Use hit_problem when they describe being stuck, resolved_problem once the fix has worked, ' +
       'completed_step when they finish a step (this also moves them to the next one), and ' +
-      'noted_preference for something worth remembering about how they work.',
+      'noted_preference for something worth remembering about how they work. Requires the passcode you ' +
+      'collected earlier this call — nothing gets recorded without knowing whose progress it is.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -109,6 +117,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         problem: { type: 'string', description: 'What went wrong, for hit_problem or resolved_problem.' },
         resolution: { type: 'string', description: 'What fixed it, for resolved_problem.' },
         note: { type: 'string', description: 'Short note worth carrying into the next call.' },
+        passcode: { type: 'string', description: 'The passcode collected earlier this call.' },
       },
       required: ['event'],
       additionalProperties: false,
@@ -124,6 +133,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         reason: { type: 'string', description: 'Why the curriculum could not answer this.' },
         question: { type: 'string', description: "The caller's question, for the creator to follow up." },
+        passcode: { type: 'string', description: 'The passcode collected earlier this call, if you have it.' },
         transfer: { type: 'boolean', description: 'True to connect them to a person now.' },
       },
       required: ['reason'],
@@ -150,7 +160,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
     case 'get_caller_state':
       return getCallerState(ctx, args);
     case 'get_current_step':
-      return getCurrentStep(ctx);
+      return getCurrentStep(ctx, args);
     case 'get_step_by_position':
       return getStepByPosition(ctx, args);
     case 'search_curriculum':
@@ -166,14 +176,52 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
   }
 }
 
-async function loadEnrollment(ctx: ToolContext): Promise<Enrollment | null> {
-  if (!ctx.session.enrollment_id) return null;
-  return (await ctx.db.prepare('SELECT * FROM enrollments WHERE id = ?').get<Enrollment>(ctx.session.enrollment_id)) ?? null;
+interface Identity {
+  customer: Customer | null;
+  enrollment: Enrollment | null;
 }
 
-async function loadCustomer(ctx: ToolContext): Promise<Customer | null> {
-  if (!ctx.session.customer_id) return null;
-  return (await ctx.db.prepare('SELECT * FROM customers WHERE id = ?').get<Customer>(ctx.session.customer_id)) ?? null;
+/**
+ * Resolves who the tools are dealing with, two possible ways:
+ *
+ *  1. Session-bound (this platform's own webhook path): the caller was
+ *     identified from real caller ID before the call even reached the model,
+ *     and the token already carries customer_id/enrollment_id. No argument
+ *     needed.
+ *  2. Passcode (any integration that never gives this platform caller ID at
+ *     all — see mcp/tools.ts's TOOL_DEFINITIONS descriptions): the model was
+ *     told to ask the caller for their passcode and pass it as an argument.
+ *     There is no per-call session on that path, so this repeats on every
+ *     tool call that needs to know who's calling — see docs/XAI-API-NOTES.md
+ *     for why that repetition is the actual constraint, not an oversight.
+ *
+ * Session identity wins when both are somehow present, since it came from a
+ * channel the caller cannot misstate.
+ */
+async function resolveIdentity(ctx: ToolContext, args: Record<string, unknown>): Promise<Identity> {
+  if (ctx.session.customer_id) {
+    const customer = await ctx.db.prepare('SELECT * FROM customers WHERE id = ?').get<Customer>(ctx.session.customer_id);
+    const enrollment = ctx.session.enrollment_id
+      ? await ctx.db.prepare('SELECT * FROM enrollments WHERE id = ?').get<Enrollment>(ctx.session.enrollment_id)
+      : null;
+    return { customer: customer ?? null, enrollment: enrollment ?? null };
+  }
+
+  const passcode = typeof args.passcode === 'string' ? args.passcode.trim() : '';
+  if (!passcode) return { customer: null, enrollment: null };
+
+  const customer = await ctx.db
+    .prepare('SELECT * FROM customers WHERE creator_id = ? AND passcode = ?')
+    .get<Customer>(ctx.session.creator_id, passcode);
+  if (!customer) {
+    await ctx.logEvent?.('passcode_not_found', {});
+    return { customer: null, enrollment: null };
+  }
+
+  const enrollment = await ctx.db
+    .prepare('SELECT * FROM enrollments WHERE customer_id = ? AND course_id = ?')
+    .get<Enrollment>(customer.id, ctx.session.course_id);
+  return { customer, enrollment: enrollment ?? null };
 }
 
 function renderStep(detail: StepDetail) {
@@ -190,42 +238,17 @@ function renderStep(detail: StepDetail) {
   };
 }
 
+/** No identity yet — either the passcode wasn't asked for, or it didn't match anyone. */
 const NOT_IDENTIFIED = {
   identified: false,
   guidance:
-    'This caller has not been identified. Do not reveal any account or progress information. Help them ' +
-    'only with material that is safe for anyone, and ask them to call from the number on their account.',
+    'This caller has not been identified. Do not reveal any account or progress information. Ask for ' +
+    'their passcode — everyone gets one when they sign up. If they say they never signed up, or the ' +
+    'passcode does not match anyone, tell them where to sign up and do not guess at their identity.',
 };
 
-/**
- * DIAGNOSTIC PATH: when this tool's session carries no bound customer_id
- * (the console-managed agent path may not give us a per-call webhook to bind
- * one at all — see chat), fall back to a phone number the model passes as an
- * argument, if it has one. Read-only for now: does not persist a binding.
- * Remove this fallback once it's confirmed whether the console path ever
- * gives the model real caller-ID visibility to pass through.
- */
 async function getCallerState(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
-  let customer = await loadCustomer(ctx);
-  let enrollment = await loadEnrollment(ctx);
-
-  if (!customer && typeof args.caller_phone === 'string' && args.caller_phone.trim()) {
-    const phone = normalizeE164(args.caller_phone);
-    if (phone) {
-      customer =
-        (await ctx.db
-          .prepare('SELECT * FROM customers WHERE creator_id = ? AND phone_e164 = ? AND verified_at IS NOT NULL')
-          .get<Customer>(ctx.session.creator_id, phone)) ?? null;
-      if (customer) {
-        const enrollments = await ctx.db
-          .prepare('SELECT * FROM enrollments WHERE customer_id = ? ORDER BY created_at DESC LIMIT 1')
-          .get<Enrollment>(customer.id);
-        enrollment = enrollments ?? null;
-      }
-      await ctx.logEvent?.('caller_state_phone_fallback', { phone, matched: Boolean(customer) });
-    }
-  }
-
+  const { customer, enrollment } = await resolveIdentity(ctx, args);
   if (!customer || !enrollment) return { data: NOT_IDENTIFIED };
 
   const current = enrollment.current_step_id ? await getStep(ctx.db, enrollment.current_step_id) : null;
@@ -248,8 +271,8 @@ async function getCallerState(ctx: ToolContext, args: Record<string, unknown>): 
   };
 }
 
-async function getCurrentStep(ctx: ToolContext): Promise<ToolResult> {
-  const enrollment = await loadEnrollment(ctx);
+async function getCurrentStep(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+  const { enrollment } = await resolveIdentity(ctx, args);
   if (!enrollment) return { data: NOT_IDENTIFIED };
   if (!enrollment.current_step_id) {
     return { data: { message: 'This caller has not started the course. Begin at the first step.' } };
@@ -290,7 +313,7 @@ async function doSearch(ctx: ToolContext, args: Record<string, unknown>): Promis
   const query = typeof args.query === 'string' ? args.query : '';
   if (!query.trim()) return { data: { error: 'query is required' }, isError: true };
 
-  const enrollment = await loadEnrollment(ctx);
+  const { enrollment } = await resolveIdentity(ctx, args);
   const hits = await searchCurriculum(ctx.db, ctx.session.course_id, query, {
     nearStepId: enrollment?.current_step_id ?? null,
     limit: 5,
@@ -316,7 +339,7 @@ async function doDiagnose(ctx: ToolContext, args: Record<string, unknown>): Prom
   const symptom = typeof args.symptom === 'string' ? args.symptom : '';
   if (!symptom.trim()) return { data: { error: 'symptom is required' }, isError: true };
 
-  const enrollment = await loadEnrollment(ctx);
+  const { enrollment } = await resolveIdentity(ctx, args);
   let step: Step | null = null;
 
   if (typeof args.module === 'number' || typeof args.step === 'number') {
@@ -368,7 +391,7 @@ async function doDiagnose(ctx: ToolContext, args: Record<string, unknown>): Prom
 }
 
 async function doRecordProgress(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
-  const enrollment = await loadEnrollment(ctx);
+  const { enrollment } = await resolveIdentity(ctx, args);
   if (!enrollment) return { data: NOT_IDENTIFIED };
 
   const event = String(args.event ?? '');
@@ -417,14 +440,14 @@ async function doRequestHuman(ctx: ToolContext, args: Record<string, unknown>): 
   const wantsTransfer = args.transfer === true;
 
   const creator = await ctx.db.prepare('SELECT * FROM creators WHERE id = ?').get<Creator>(ctx.session.creator_id);
-  const enrollment = await loadEnrollment(ctx);
+  const { customer, enrollment } = await resolveIdentity(ctx, args);
 
   await ctx.db
     .prepare(
       `INSERT INTO escalations (id, creator_id, customer_id, call_id, step_id, reason, question, status, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
     )
-    .run(id('esc'), ctx.session.creator_id, ctx.session.customer_id, ctx.session.call_id, enrollment?.current_step_id ?? null, reason, question, now());
+    .run(id('esc'), ctx.session.creator_id, customer?.id ?? null, ctx.session.call_id, enrollment?.current_step_id ?? null, reason, question, now());
 
   if (enrollment) {
     await appendTransition(ctx.db, {

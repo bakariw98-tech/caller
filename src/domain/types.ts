@@ -85,6 +85,7 @@ export interface Customer {
   name: string | null;
   phone_e164: string;
   verified_at: number | null;
+  passcode: string | null;
   preferences_json: string;
   created_at: number;
 }

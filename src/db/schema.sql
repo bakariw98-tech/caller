@@ -145,12 +145,19 @@ CREATE TABLE IF NOT EXISTS customers (
   name              TEXT,
   phone_e164        TEXT NOT NULL,
   verified_at       INTEGER,
+  -- Spoken/keyed identity, for integrations that never give this platform a
+  -- webhook or caller ID at all (see workers/schema.sql and
+  -- docs/XAI-API-NOTES.md — the Cloudflare build's console-managed path is
+  -- the reason this exists). Optional here since this build's own webhook
+  -- path still identifies by phone_e164 directly.
+  passcode          TEXT,
   preferences_json  TEXT NOT NULL DEFAULT '{}',
   created_at        INTEGER NOT NULL,
   -- A number identifies an account only within one creator's coach.
   UNIQUE (creator_id, phone_e164)
 );
 CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone_e164);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_passcode ON customers(creator_id, passcode) WHERE passcode IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS enrollments (
   id              TEXT PRIMARY KEY,

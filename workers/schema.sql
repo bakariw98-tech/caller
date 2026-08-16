@@ -122,11 +122,19 @@ CREATE TABLE IF NOT EXISTS customers (
   name              TEXT,
   phone_e164        TEXT NOT NULL,
   verified_at       INTEGER,
+  -- Spoken/keyed identity for calls the platform never sees a webhook for
+  -- (console-managed Voice Agent Builder numbers give no caller ID at all —
+  -- see docs/XAI-API-NOTES.md). The coach asks for this out loud; there is no
+  -- per-call session on that path to bind identity to any other way, so this
+  -- doubles as the one channel that still works regardless of which xAI
+  -- integration a given number ends up on.
+  passcode          TEXT,
   preferences_json  TEXT NOT NULL DEFAULT '{}',
   created_at        INTEGER NOT NULL,
   UNIQUE (creator_id, phone_e164)
 );
 CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone_e164);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_passcode ON customers(creator_id, passcode) WHERE passcode IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS enrollments (
   id              TEXT PRIMARY KEY,
