@@ -11,6 +11,8 @@ import { auditStructure } from '../../src/curriculum/schema.js';
 import { createBudget } from '../billing/promotional.js';
 import { mintCallToken } from '../mcp/auth.js';
 import { buildCoachInstructions } from '../../src/coach/prompt.js';
+import { renderCourseToMarkdown } from '../../src/curriculum/render-markdown.js';
+import { structureCurriculum, NoUsableSourceError, type RawSource } from '../curriculum/structure.js';
 
 export const adminRoute = new Hono<{ Bindings: Env }>();
 
@@ -121,6 +123,80 @@ adminRoute.post('/api/creators/:id/curriculum', async (c) => {
       );
     }
     throw err;
+  }
+});
+
+/**
+ * Turns a creator's raw material — course docs, how-to guides, the questions
+ * they get asked constantly, video transcripts — into structured curriculum.
+ *
+ * Deliberately saves nothing. It returns a *draft* in the ordinary authoring
+ * format plus the audit and the source quotes behind each step, so the
+ * creator reviews and edits real text and then posts it to the normal
+ * curriculum endpoint. Machine-extracted material gets no shortcut around
+ * the structure audit or around human approval — see curriculum/structure.ts
+ * for why that matters more here than anywhere else in this codebase.
+ */
+adminRoute.post('/api/creators/:id/curriculum/structure', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const creator = await db.prepare('SELECT * FROM creators WHERE id = ?').get<Creator>(creatorId);
+  if (!creator) return c.json({ error: 'creator not found' }, 404);
+
+  const body = (await c.req.json().catch(() => ({}))) as {
+    sources?: { kind?: string; title?: string; text?: string }[];
+    course_title?: string;
+  };
+
+  const allowed = new Set(['curriculum', 'guide', 'faq', 'roadblocks', 'transcript', 'notes']);
+  const sources: RawSource[] = (body.sources ?? [])
+    .filter((s) => typeof s.text === 'string' && s.text.trim())
+    .map((s) => ({
+      kind: (allowed.has(String(s.kind)) ? String(s.kind) : 'notes') as RawSource['kind'],
+      title: s.title?.trim() || undefined,
+      text: String(s.text),
+    }));
+
+  if (sources.length === 0) return c.json({ error: 'Add some material to work from first.' }, 400);
+
+  try {
+    const result = await structureCurriculum({
+      apiBase: c.env.XAI_API_BASE,
+      apiKey: c.env.XAI_API_KEY,
+      model: c.env.XAI_TEXT_MODEL,
+      sources,
+      courseTitleHint: body.course_title?.trim() || undefined,
+    });
+
+    const markdown = renderCourseToMarkdown(result.course);
+    const issues = auditStructure(result.course);
+    const stepCount = result.course.modules.flatMap((m) => m.lessons.flatMap((l) => l.steps)).length;
+
+    return c.json({
+      markdown,
+      issues,
+      provenance: result.provenance,
+      counts: {
+        modules: result.course.modules.length,
+        lessons: result.course.modules.flatMap((m) => m.lessons).length,
+        steps: stepCount,
+        problems: result.course.modules
+          .flatMap((m) => m.lessons.flatMap((l) => l.steps))
+          .reduce((n, s) => n + s.problems.length, 0),
+        references: result.course.references.length,
+      },
+      usage: result.usage,
+      note:
+        'Draft only — nothing has been saved. Blanks are deliberate: the material did not state them, ' +
+        'and inventing them would put words in your mouth. Fill them in, then upload.',
+    });
+  } catch (err) {
+    if (err instanceof NoUsableSourceError) return c.json({ error: err.message }, 400);
+    console.error('structuring failed', err);
+    return c.json(
+      { error: 'Could not structure that material', detail: err instanceof Error ? err.message : String(err) },
+      502,
+    );
   }
 });
 

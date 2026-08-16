@@ -63,6 +63,15 @@ const PAGE = /* html */ `<!doctype html>
   .issues li.warning { color: #8a6a15; }
   .result { background: #f7f7f8; border-radius: 8px; padding: .8rem .9rem; margin-top: .75rem; font-size: .88rem; }
   .result a { color: #1a1a1c; }
+  .source { border: 1px solid #e5e5e7; border-radius: 10px; padding: .85rem; margin-bottom: .7rem; background: #fbfbfc; }
+  .source-head { display: flex; gap: .5rem; align-items: center; margin-bottom: .5rem; }
+  .source-head select { width: auto; flex: 0 0 auto; }
+  .source-head input { flex: 1 1 auto; }
+  .source-head button { margin: 0; padding: .35rem .6rem; background: #eceef0; color: #6d6d72; font-size: .8rem; }
+  .source textarea { min-height: 7rem; }
+  .prov { border-left: 2px solid #e5e5e7; padding: .35rem .6rem; margin: .35rem 0; font-size: .82rem; }
+  .prov .p-path { font-weight: 600; }
+  .prov .p-quote { color: #6d6d72; font-style: italic; }
   .badge { display: inline-block; font-size: .72rem; font-weight: 700; letter-spacing: .04em;
     text-transform: uppercase; background: #eceef0; color: #6d6d72; border-radius: 4px; padding: .15rem .4rem; margin-left: .4rem; }
 </style>
@@ -127,13 +136,29 @@ const PAGE = /* html */ `<!doctype html>
   </section>
 
   <section id="s-curriculum">
-    <h2>2. Paste the curriculum<span class="badge">structured, not a blob</span></h2>
-    <p class="hint">See the format at the top of <code>src/curriculum/parse-markdown.ts</code> — modules, lessons, steps, each with instructions, an expected result, and common problems.</p>
-    <textarea id="curriculum" placeholder="# Course: Your Course Title&#10;Outcome: ...&#10;&#10;## Module: ...&#10;### Lesson: ...&#10;#### Step: ...&#10;Instructions: ...&#10;Expected result: ...&#10;Problem: ...&#10;  Fix: ..."></textarea>
-    <button id="btn-curriculum">Check &amp; upload</button>
-    <label style="display:inline-flex;align-items:center;gap:.4rem;font-weight:400;margin-top:.6rem">
-      <input type="checkbox" id="force" style="width:auto"> Upload anyway if there are errors (draft only — can't go live yet)
-    </label>
+    <h2>2. Add your material<span class="badge">any format</span></h2>
+    <p class="hint">
+      Paste whatever you already have — your course outline, a how-to guide, the questions customers ask
+      you constantly, the roadblocks they hit, a video transcript. Add as many blocks as you like and say
+      what each one is. We'll turn it into the structure the coach needs, then you review it.
+    </p>
+    <div id="sources"></div>
+    <button id="btn-add-source" class="secondary" type="button">+ Add another block</button>
+    <button id="btn-structure">Build my curriculum</button>
+    <div id="status-structure" class="status"></div>
+
+    <div id="draft-wrap" style="display:none">
+      <label>Your curriculum <span class="hint" style="display:inline">— edit anything before uploading</span></label>
+      <textarea id="curriculum"></textarea>
+      <details id="provenance-wrap" style="margin:.6rem 0">
+        <summary class="hint" style="cursor:pointer">Where did each part come from?</summary>
+        <div id="provenance" style="max-height:16rem;overflow:auto;margin-top:.5rem"></div>
+      </details>
+      <button id="btn-curriculum">Check &amp; upload</button>
+      <label style="display:inline-flex;align-items:center;gap:.4rem;font-weight:400;margin-top:.6rem">
+        <input type="checkbox" id="force" style="width:auto"> Upload anyway if there are errors (draft only — can't go live yet)
+      </label>
+    </div>
     <div id="status-curriculum" class="status"></div>
   </section>
 
@@ -210,6 +235,9 @@ const PAGE = /* html */ `<!doctype html>
 
   document.getElementById('webhook-url').textContent = base + '/webhooks/xai';
 
+  function esc(t) {
+    return String(t == null ? '' : t).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  }
   function show(id, kind, html) {
     const el = document.getElementById('status-' + id);
     el.className = 'status show ' + kind;
@@ -276,6 +304,93 @@ const PAGE = /* html */ `<!doctype html>
       unlock('curriculum');
     } catch (e) {
       show('creator', 'err', e.message);
+    }
+  };
+
+  // ---- raw material blocks -------------------------------------------------
+  const SOURCE_KINDS = [
+    ['curriculum', 'Course / curriculum'],
+    ['guide', 'How-to guide'],
+    ['faq', 'Questions I get asked'],
+    ['roadblocks', 'Common roadblocks'],
+    ['transcript', 'Video / audio transcript'],
+    ['notes', 'Notes / other'],
+  ];
+
+  function addSourceBlock(kind) {
+    const wrap = document.createElement('div');
+    wrap.className = 'source';
+    const opts = SOURCE_KINDS.map(
+      (k) => '<option value="' + k[0] + '"' + (k[0] === kind ? ' selected' : '') + '>' + k[1] + '</option>',
+    ).join('');
+    wrap.innerHTML =
+      '<div class="source-head">' +
+      '<select class="s-kind">' + opts + '</select>' +
+      '<input class="s-title" placeholder="What is this? (optional)">' +
+      '<button type="button" class="s-remove">Remove</button>' +
+      '</div>' +
+      '<textarea class="s-text" placeholder="Paste it here — rough is fine."></textarea>';
+    wrap.querySelector('.s-remove').onclick = () => {
+      if (document.querySelectorAll('#sources .source').length > 1) wrap.remove();
+    };
+    document.getElementById('sources').appendChild(wrap);
+  }
+  addSourceBlock('curriculum');
+  document.getElementById('btn-add-source').onclick = () => addSourceBlock('faq');
+
+  function collectSources() {
+    return [...document.querySelectorAll('#sources .source')]
+      .map((el) => ({
+        kind: el.querySelector('.s-kind').value,
+        title: el.querySelector('.s-title').value.trim(),
+        text: el.querySelector('.s-text').value,
+      }))
+      .filter((s) => s.text.trim());
+  }
+
+  function renderIssues(issues) {
+    if (!issues || !issues.length) return '';
+    return '<ul class="issues">' + issues
+      .map((i) => '<li class="' + i.severity + '"><strong>' + i.path + '</strong> — ' + i.message + '</li>')
+      .join('') + '</ul>';
+  }
+
+  document.getElementById('btn-structure').onclick = async () => {
+    const sources = collectSources();
+    if (!sources.length) return show('structure', 'err', 'Paste some material first.');
+
+    const btn = document.getElementById('btn-structure');
+    btn.disabled = true;
+    show('structure', 'ok', 'Reading your material… this can take a minute for a big course.');
+    try {
+      const res = await call('/api/creators/' + creatorId + '/curriculum/structure', {
+        sources,
+        course_title: document.getElementById('outcome').value.trim() || undefined,
+      });
+
+      document.getElementById('curriculum').value = res.markdown;
+      document.getElementById('draft-wrap').style.display = 'block';
+
+      document.getElementById('provenance').innerHTML = (res.provenance || [])
+        .map((p) => '<div class="prov"><div class="p-path">' + esc(p.path) + '</div><div class="p-quote">“' + esc(p.quote) + '”</div></div>')
+        .join('') || '<p class="hint">No quotes returned.</p>';
+
+      const c = res.counts;
+      const errors = (res.issues || []).filter((i) => i.severity === 'error');
+      let html = 'Found ' + c.modules + ' module(s), ' + c.steps + ' step(s), ' +
+        c.problems + ' documented problem(s), ' + c.references + ' reference(s). ' +
+        'Cost $' + (res.usage.costUsd || 0).toFixed(3) + '.';
+      if (errors.length) {
+        html += '<p style="margin:.5rem 0 0"><strong>' + errors.length + ' gap(s) to fill in.</strong> ' +
+          'These were left blank on purpose — your material didn\'t state them, and guessing would put ' +
+          'words in your mouth. Edit the curriculum below, then upload.</p>';
+      }
+      html += renderIssues(res.issues);
+      show('structure', errors.length ? 'err' : 'ok', html);
+    } catch (e) {
+      show('structure', 'err', e.message);
+    } finally {
+      btn.disabled = false;
     }
   };
 

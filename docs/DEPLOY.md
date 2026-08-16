@@ -87,12 +87,27 @@ right on the confirmation page (also visible on later visits to `/account`).
 Signing up twice with the same phone returns the existing account rather than
 creating a second one.
 
-**Creators:** `https://caller-coach.bakariw98.workers.dev/onboard` — a
-five-step page: enter the admin token once, business info, paste curriculum
-(shows the structure audit inline), attach a phone number (manual — see
-above), optional trial pool, publish. Each step unlocks the next on success.
-It's a plain client for the same JSON API below; nothing it does isn't also
-reachable by script, so both remain available:
+**Creators:** `https://caller-coach.bakariw98.workers.dev/onboard` — enter the
+admin token once, then business info, then **add raw material in whatever form
+you already have it** (course outline, how-to guide, the questions customers
+keep asking, roadblocks, a video transcript — as many blocks as you like, each
+labelled). The system structures it into a curriculum draft you review and
+edit before uploading, then attach a phone number (manual — see above),
+optional trial pool, publish, and copy the generated agent setup into the xAI
+console.
+
+Structuring is deliberately **extractive, never generative**: if your material
+doesn't state a step's expected result, it is left blank and flagged rather
+than invented, because an invented one would be spoken to your customers as
+your own method. Blanks are the to-do list, and the structure audit blocks
+publishing until the important ones are filled. Each step also carries the
+verbatim quote it came from, viewable under "Where did each part come from?".
+Costs a few cents per course, one time.
+
+The page is a plain client for the same JSON API below; nothing it does is
+unreachable by script, so both remain available. `POST
+/api/creators/:id/curriculum/structure` takes `{sources:[{kind,title,text}]}`
+and returns a draft plus its audit and provenance without saving anything:
 
 ```bash
 TOKEN="<your ADMIN_TOKEN>"

@@ -9,6 +9,7 @@ export interface Env {
   XAI_API_BASE: string;
   XAI_REALTIME_HOST: string; // e.g. api.x.ai — used to build the wss:// URL
   XAI_VOICE_MODEL: string;
+  XAI_TEXT_MODEL: string; // structuring uploaded curriculum; see curriculum/structure.ts
   XAI_WEBHOOK_SIGNING_SECRET: string; // fallback only; numbers carry their own
 
   PUBLIC_BASE_URL: string;

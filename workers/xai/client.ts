@@ -52,3 +52,60 @@ export function telUri(e164: string): string {
   const trimmed = e164.trim();
   return trimmed.startsWith('tel:') ? trimmed : `tel:${trimmed}`;
 }
+
+export interface ChatUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  cost_in_usd_ticks?: number;
+}
+
+/**
+ * Text inference with a required JSON schema.
+ *
+ * `strict: true` means the response is guaranteed to match the schema
+ * structurally, which removes a whole class of parsing defence — but says
+ * nothing about whether the *content* is faithful to the source. That part is
+ * the prompt's job, and is why curriculum/structure.ts is written to be
+ * extractive. Temperature is pinned to 0: this is an extraction task, and
+ * two runs over one document should not disagree.
+ */
+export async function chatCompletionJson<T>(
+  apiBase: string,
+  apiKey: string,
+  params: {
+    model: string;
+    system: string;
+    user: string;
+    schemaName: string;
+    schema: Record<string, unknown>;
+  },
+): Promise<{ value: T; usage: ChatUsage }> {
+  const res = await fetch(`${apiBase}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: params.model,
+      temperature: 0,
+      messages: [
+        { role: 'system', content: params.system },
+        { role: 'user', content: params.user },
+      ],
+      response_format: {
+        type: 'json_schema',
+        json_schema: { name: params.schemaName, strict: true, schema: params.schema },
+      },
+    }),
+  });
+
+  const text = await res.text();
+  if (!res.ok) throw new XaiApiError(text.slice(0, 400), res.status, text);
+
+  const body = JSON.parse(text) as {
+    choices?: { message?: { content?: string } }[];
+    usage?: ChatUsage;
+  };
+  const content = body.choices?.[0]?.message?.content;
+  if (!content) throw new XaiApiError('No content in completion response', res.status, text.slice(0, 400));
+
+  return { value: JSON.parse(content) as T, usage: body.usage ?? {} };
+}
