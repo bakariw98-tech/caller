@@ -25,7 +25,7 @@ XAI_REALTIME_HOST = "api.x.ai"
 XAI_VOICE_MODEL = "grok-voice-latest"
 # Set to this Worker's real URL after the first deploy (see docs/DEPLOY.md) —
 # xAI must be able to reach both /webhooks/xai and /mcp on it.
-PUBLIC_BASE_URL = "https://caller-coach.workers.dev"
+PUBLIC_BASE_URL = "https://caller-coach.bakariw98.workers.dev"
 
 PLATFORM_MIN_PRICE_PER_MINUTE_CENTS = "50"
 PLATFORM_AUDIO_COST_PER_MINUTE_CENTS = "6"

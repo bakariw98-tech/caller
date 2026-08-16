@@ -3,20 +3,10 @@ import type { Env } from '../env.js';
 import { wrapD1 } from '../db/d1-adapter.js';
 import { id, now } from '../../src/util/ids.js';
 import type { Creator } from '../../src/domain/types.js';
-import { createPhoneNumber } from '../xai/client.js';
+import { createPhoneNumber, XaiApiError } from '../xai/client.js';
 
 export const phoneNumberRoute = new Hono<{ Bindings: Env }>();
 
-/**
- * Provisions a number for a creator's coach.
- *
- * Same operation as `npm run provision` in the Node build, exposed as an admin
- * endpoint here because a Worker has no local CLI to run scripts from — the
- * user drives this with one curl call after deploying, documented in
- * docs/DEPLOY.md. The webhook signing secret is returned exactly once by xAI
- * and stored in the same request that receives it; a number whose secret we
- * cannot read is refused rather than stored unverifiable.
- */
 phoneNumberRoute.use('/api/*', async (c, next) => {
   const token = c.env.ADMIN_TOKEN;
   if (!token) return c.json({ error: 'ADMIN_TOKEN is not configured' }, 503);
@@ -26,6 +16,16 @@ phoneNumberRoute.use('/api/*', async (c, next) => {
   await next();
 });
 
+/**
+ * Provisions a number for a creator's coach via xAI's `POST /v2/phone-numbers`.
+ *
+ * As documented — but confirmed against the real API on 2026-08-16 to return
+ * `403 Provisioning SpaceXAI phone numbers via the API is not supported. Use
+ * the console (Voice Agents) instead.` This is left in place because it is
+ * what the docs describe and may work for other account tiers, but
+ * `/phone-number/manual` below is the path that actually works today. See
+ * docs/XAI-API-NOTES.md.
+ */
 phoneNumberRoute.post('/api/creators/:id/phone-number', async (c) => {
   const db = wrapD1(c.env.DB);
   const creatorId = c.req.param('id');
@@ -39,11 +39,31 @@ phoneNumberRoute.post('/api/creators/:id/phone-number', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { area_code?: string };
   const webhookUrl = `${c.env.PUBLIC_BASE_URL}/webhooks/xai`;
 
-  const result = await createPhoneNumber(c.env.XAI_API_BASE, c.env.XAI_API_KEY, {
-    name: `${creator.business_name} — ${creator.coach_name}`,
-    webhookUrl,
-    areaCode: body.area_code,
-  });
+  let result;
+  try {
+    result = await createPhoneNumber(c.env.XAI_API_BASE, c.env.XAI_API_KEY, {
+      name: `${creator.business_name} — ${creator.coach_name}`,
+      webhookUrl,
+      areaCode: body.area_code,
+    });
+  } catch (err) {
+    if (err instanceof XaiApiError) {
+      return c.json(
+        {
+          error: 'xAI rejected the provisioning request',
+          status: err.status,
+          detail: err.body,
+          hint:
+            err.status === 403
+              ? 'This account cannot provision numbers via the API. Provision it in the xAI console (Voice Agents), ' +
+                'then register the result with POST /api/creators/:id/phone-number/manual — see docs/DEPLOY.md.'
+              : undefined,
+        },
+        502,
+      );
+    }
+    throw err;
+  }
 
   const e164 = (result.phone_number as string | undefined) ?? (result.e164 as string | undefined) ?? (result.number as string | undefined);
   if (!e164) {
@@ -64,4 +84,57 @@ phoneNumberRoute.post('/api/creators/:id/phone-number', async (c) => {
     .run(id('pn'), creator.id, result.phone_number_id, e164, result.sip_host ?? null, result.webhook_id ?? null, secret, now());
 
   return c.json({ e164, webhook_url: webhookUrl }, 201);
+});
+
+/**
+ * Registers a number that was provisioned through the xAI console instead of
+ * the API — the path that actually works right now (see above). The console
+ * shows the webhook signing secret exactly once at creation time, same as the
+ * API would have; it must be pasted in here in that same session, since xAI
+ * will not show it again.
+ */
+phoneNumberRoute.post('/api/creators/:id/phone-number/manual', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const creator = await db.prepare('SELECT * FROM creators WHERE id = ?').get<Creator>(creatorId);
+  if (!creator) return c.json({ error: 'creator not found' }, 404);
+
+  const body = (await c.req.json().catch(() => ({}))) as {
+    e164?: string;
+    signing_secret?: string;
+    phone_number_id?: string;
+    sip_host?: string;
+    webhook_id?: string;
+  };
+
+  if (!body.e164?.trim() || !body.signing_secret?.trim()) {
+    return c.json({ error: 'e164 and signing_secret are required' }, 400);
+  }
+
+  const webhookUrl = `${c.env.PUBLIC_BASE_URL}/webhooks/xai`;
+
+  await db
+    .prepare(
+      `INSERT INTO phone_numbers
+         (id, creator_id, xai_phone_number_id, e164, sip_host, webhook_id, origin, signing_secret, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'xai_provisioned', ?, ?)`,
+    )
+    .run(
+      id('pn'),
+      creator.id,
+      body.phone_number_id ?? `manual_${Date.now()}`,
+      body.e164.trim(),
+      body.sip_host ?? 'sip.voice.x.ai',
+      body.webhook_id ?? null,
+      body.signing_secret.trim(),
+      now(),
+    );
+
+  return c.json(
+    {
+      e164: body.e164.trim(),
+      webhook_url_reminder: `Confirm the console has this exact webhook URL set: ${webhookUrl}`,
+    },
+    201,
+  );
 });

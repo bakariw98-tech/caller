@@ -5,6 +5,28 @@ details are load-bearing and a few are genuinely ambiguous in the published
 docs. Anything marked **unverified** has not been exercised against a live call
 and should be confirmed on the first real one.
 
+## Confirmed against the real API: number provisioning is console-only
+
+**`POST /v2/phone-numbers` returns `403` on this account**, despite being the
+documented way to provision a number:
+
+```
+{"code":"The caller does not have permission to execute the specified operation",
+ "error":"Provisioning SpaceXAI phone numbers via the API is not supported.
+          Use the console (Voice Agents) instead."}
+```
+
+Confirmed 2026-08-16 against production, with a real `XAI_API_KEY`, from the
+deployed Worker — not a docs read, an actual rejected request. Whether this is
+an account-tier restriction or the documented endpoint no longer matching
+reality isn't knowable from here; either way, the working path today is the
+xAI console (Voice Agents section), then registering the result with this
+app via `POST /api/creators/:id/phone-number/manual` — see docs/DEPLOY.md.
+The Node build's `npm run provision` and the Worker's
+`/api/creators/:id/phone-number` (API-attempt version) are left in place since
+they match the docs and may work on other accounts, but don't assume they will
+work on yours without testing first.
+
 Sources:
 - <https://docs.x.ai/developers/model-capabilities/audio/voice-agent/sip>
 - <https://docs.x.ai/developers/model-capabilities/audio/voice-agent>

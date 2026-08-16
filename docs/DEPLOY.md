@@ -5,89 +5,67 @@ Workers, D1, and Durable Objects. See
 [docs/CLOUDFLARE-PORT-NOTES.md](./CLOUDFLARE-PORT-NOTES.md) for why this build
 exists alongside the Node one and what differs between them.
 
-## What's already done
+## What's already live
 
-- **D1 database created and schema applied**: `caller-coach`
-  (`36a74a8c-1399-4c55-8a1b-cb07b1f1d9a5`), wired into `workers/wrangler.toml`.
-- **A demo creator is already seeded** in that live database: Open Crumb
-  Baking ("Rosa"), a full 3-module sourdough course (6 steps, 11 documented
-  problems), a $30-minute-block trial pool, and one verified customer (Dana
-  Whitfield, `+15550100199`, 30 minutes of paid credit, mid-course with an
-  unresolved problem from a prior "call"). Nothing further needs seeding to
-  place a first real test call once a number is provisioned.
-- **Everything has been smoke-tested locally** against a Miniflare-simulated
-  D1 and Durable Object — webhook signature verification, replay protection,
-  curriculum ingestion, the full MCP tool surface, and the Durable Object's
-  outbound connection attempt to the **real** xAI API (which authenticated the
-  request and rejected only the placeholder key — see
-  CLOUDFLARE-PORT-NOTES.md for the exact exchange). The one thing that could
-  not be exercised from here is a real API key completing a real call.
+Deployed at **`https://caller-coach.bakariw98.workers.dev`**. Concretely:
 
-## What you need to do
+- D1 database created and schema applied: `caller-coach`
+  (`36a74a8c-1399-4c55-8a1b-cb07b1f1d9a5`).
+- A demo creator is seeded in that live database: Open Crumb Baking ("Rosa"),
+  a full 3-module sourdough course (6 steps, 11 documented problems), a
+  $30-minute-block trial pool, and one verified customer (Dana Whitfield,
+  `+15550100199`, 30 minutes of paid credit, mid-course with an unresolved
+  problem from a prior "call").
+- `wrangler deploy` has run, all four secrets are set (`XAI_API_KEY` is a real
+  key), and `PUBLIC_BASE_URL` points at the real deployed URL.
+- Smoke-tested against Miniflare *and* against this real deployment — webhook
+  signature verification, curriculum ingestion, the full MCP tool surface
+  against real seeded data, and the Durable Object's outbound connection to
+  the real xAI API, which authenticated correctly (see
+  CLOUDFLARE-PORT-NOTES.md).
 
-Everything below requires a Cloudflare account with Workers, D1, and Durable
-Objects available (all on the free tier), and an xAI API key.
+## The one blocker: number provisioning is console-only
 
-### 1. Log in and deploy
+`POST /v2/phone-numbers` — the documented way to provision a number — returns
+`403 Provisioning SpaceXAI phone numbers via the API is not supported. Use the
+console (Voice Agents) instead.` on this account. Confirmed against production
+with the real key, not a docs read. See docs/XAI-API-NOTES.md.
 
-```bash
-cd workers
-npm install
-npx wrangler login
-npx wrangler deploy
+**So: provision the number by hand, then register it with this app.**
+
+### 1. Provision in the xAI console
+
+Go to the xAI console → **Voice Agents** → phone numbers, and create a number
+for Open Crumb Baking (or whichever creator). Set its webhook URL to:
+
+```
+https://caller-coach.bakariw98.workers.dev/webhooks/xai
 ```
 
-This prints your Worker's URL — something like
-`https://caller-coach.<your-subdomain>.workers.dev`.
+The console will show a **webhook signing secret exactly once**, at creation.
+Copy it immediately — there is no way to retrieve it again afterward, xAI
+included.
 
-### 2. Set secrets
-
-Never put these in `wrangler.toml` — they go in via `wrangler secret put`,
-which keeps them out of git entirely.
+### 2. Register it with this app
 
 ```bash
-npx wrangler secret put XAI_API_KEY
-npx wrangler secret put MCP_TOKEN_SECRET        # any random 32+ byte string
-npx wrangler secret put ADMIN_TOKEN             # guards the creator API below
-npx wrangler secret put XAI_WEBHOOK_SIGNING_SECRET   # optional fallback; provisioning below sets the real per-number one automatically
-```
-
-Generate random values with `openssl rand -base64 32` if you don't have one handy.
-
-### 3. Point `PUBLIC_BASE_URL` at your real Worker URL
-
-Edit `workers/wrangler.toml`:
-
-```toml
-[vars]
-PUBLIC_BASE_URL = "https://caller-coach.<your-subdomain>.workers.dev"
-```
-
-Then redeploy: `npx wrangler deploy`.
-
-This matters more than it looks: xAI needs to reach **two** endpoints on this
-URL — `/webhooks/xai` (incoming call notifications) and `/mcp` (curriculum
-tool calls, made directly by xAI's servers, not routed through your
-WebSocket). Get this wrong and the coach will connect but never be able to
-look anything up.
-
-### 4. Provision a phone number for the seeded creator
-
-```bash
-curl -X POST "https://<your-worker-url>/api/creators/creator_b77490adf793450c8a4690b0/phone-number" \
-  -H "Authorization: Bearer <your ADMIN_TOKEN>" \
+curl -X POST "https://caller-coach.bakariw98.workers.dev/api/creators/creator_b77490adf793450c8a4690b0/phone-number/manual" \
+  -H "Authorization: Bearer <ADMIN_TOKEN — see below>" \
   -H "Content-Type: application/json" \
-  -d '{"area_code": "415"}'
+  -d '{
+    "e164": "+1XXXXXXXXXX",
+    "signing_secret": "<the secret from step 1>",
+    "phone_number_id": "<optional, xAI'"'"'s id for it>"
+  }'
 ```
 
-This calls xAI's `POST /v2/phone-numbers`, points the webhook at your Worker,
-and stores the returned number and signing secret in D1 — the secret is
-returned exactly once by xAI and unrecoverable after, so this endpoint refuses
-to store a number it can't read one for.
+Your `ADMIN_TOKEN` was generated during setup and given to you separately —
+it is not repeated in this file since it's a live credential. Rotate it
+anytime with `wrangler secret put ADMIN_TOKEN` if needed.
 
-### 5. Call it
+### 3. Call it
 
-The response from step 4 gives you the number. Call it from
+The number you registered in step 2. Call it from
 **+15550100199** — that's Dana Whitfield's number in the seed data — and the
 coach should recognize the account, greet by name, and know she's on the float
 test with an unresolved "sinks every time" problem from a prior call.
@@ -101,7 +79,7 @@ The full onboarding surface is live:
 
 ```bash
 TOKEN="<your ADMIN_TOKEN>"
-BASE="https://<your-worker-url>"
+BASE="https://caller-coach.bakariw98.workers.dev"
 
 curl -X POST "$BASE/api/creators" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{
   "business_name": "...", "coach_name": "...", "price_per_minute_cents": 75
@@ -112,7 +90,10 @@ curl -X POST "$BASE/api/creators/<id>/curriculum" -H "Authorization: Bearer $TOK
   -d "$(python3 -c 'import json;print(json.dumps({"markdown": open("curriculum.md").read()}))')"
 # Returns the structure audit. Fix any "error"-severity issues before publishing.
 
-curl -X POST "$BASE/api/creators/<id>/phone-number" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"area_code":"415"}'
+# Provision the number in the xAI console (Voice Agents) — API provisioning
+# is blocked on this account, see the section above — then register it:
+curl -X POST "$BASE/api/creators/<id>/phone-number/manual" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"e164": "+1...", "signing_secret": "<from the console, shown once>"}'
 
 curl -X POST "$BASE/api/creators/<id>/publish" -H "Authorization: Bearer $TOKEN"
 ```
@@ -122,17 +103,28 @@ curl -X POST "$BASE/api/creators/<id>/publish" -H "Authorization: Bearer $TOKEN"
 The call path — webhook, Durable Object, MCP tools, billing, structure audit —
 is complete and matches the Node build's behavior. Not yet ported to Workers:
 
-- **Customer self-serve signup** (phone verification via SMS OTP, the
-  landing/account/top-up pages). For now, new customers are added directly via
-  D1 — see the pattern in `workers/scripts/seed-via-d1.ts` — until this is
-  built.
+- **Customer self-serve signup and the creator onboarding UI.** The Node
+  build's version of this (`src/web/`) uses SMS OTP for phone verification,
+  which is being replaced rather than ported as-is — see the "web-only
+  onboarding" plan below. For now, new customers are added directly via D1 —
+  see the pattern in `workers/scripts/seed-via-d1.ts`.
 - **The creator dashboard and curriculum-intelligence analytics.** The data is
   all being recorded (`call_events`, `escalations`, the full ledger); the
   read-side dashboard just isn't built for this runtime yet. Query D1 directly
   in the meantime (`npx wrangler d1 execute caller-coach --remote --command "..."`).
 
-Both exist and are tested in the Node build (`src/web/`) if you want the
-reference to port from.
+## Next: web-only onboarding, no SMS
+
+Both customer and creator onboarding are moving to plain web pages, with no
+SMS provider in the loop. For customers, phone ownership gets verified by
+their **first real inbound call** rather than a texted code: signup creates
+an unverified row from just name + phone; the call router's existing
+identified-caller lookup gets extended to also match an unverified row for
+that creator + phone and flip it to verified as part of routing that first
+call. From then on it behaves exactly like today's verified-caller path —
+same wallet, same enrollment, same progress tracking. This keeps the
+"caller ID alone never grants access to someone else's account" property
+without adding a telephony vendor back into the picture. Not yet built.
 
 ## Troubleshooting
 
@@ -140,7 +132,8 @@ reference to port from.
 probably wrong or not redeployed — xAI calls `/mcp` on it directly.
 
 **Webhook returns 401.** Check the number's signing secret matches what's
-stored — re-run step 4 if you're not sure (it's safe to re-provision).
+stored — re-run the `/phone-number/manual` registration if you're not sure
+(it's safe to register a number again; each row is independent).
 
 **`wrangler deploy` complains about Durable Object migrations.** The
 `[[migrations]]` block in `wrangler.toml` is already set up for a fresh
