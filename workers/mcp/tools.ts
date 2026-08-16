@@ -102,11 +102,13 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'record_progress',
     description:
-      'Record what changed for this caller. Call it as things happen during the call, not at the end. ' +
-      'Use hit_problem when they describe being stuck, resolved_problem once the fix has worked, ' +
-      'completed_step when they finish a step (this also moves them to the next one), and ' +
-      'noted_preference for something worth remembering about how they work. Requires the passcode you ' +
-      'collected earlier this call — nothing gets recorded without knowing whose progress it is.',
+      "Record what changed for this caller, the moment it changes — not at the end of the call, since " +
+      'calls drop. Two of these matter most and only you can know them: call resolved_problem the ' +
+      'moment the caller confirms a fix worked, and completed_step the moment they finish a step (that ' +
+      'also moves them to the next one). If a call ends without these, their next call starts from ' +
+      'stale information. Also use started_step and noted_preference where they fit. You do not need ' +
+      'to record a problem when you look one up — that is already recorded for you. Requires the ' +
+      'passcode you collected earlier this call.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -335,6 +337,44 @@ async function doSearch(ctx: ToolContext, args: Record<string, unknown>): Promis
   return { data: { found: true, results: hits.map((h) => ({ kind: h.refKind, title: h.title, content: h.body })) } };
 }
 
+/**
+ * Records that the caller hit a problem, inferred from the coach asking to
+ * diagnose one. See src/mcp/tools.ts's copy of this function for the full
+ * reasoning — in short, a real call diagnosed three problems and recorded
+ * none of them, because `record_progress` depended on the model remembering
+ * to narrate its own bookkeeping mid-conversation. Anything inferable from a
+ * tool the coach already has a reason to call is inferred server-side instead.
+ *
+ * Idempotent by (step, first 60 chars of problem), matching how
+ * `openProblems` keys them.
+ */
+async function autoRecordProblem(
+  ctx: ToolContext,
+  enrollment: Enrollment | null,
+  step: Step | null,
+  symptom: string,
+): Promise<void> {
+  if (!enrollment || !step) return;
+
+  const open = await openProblems(ctx.db, enrollment.id);
+  const alreadyOpen = open.some(
+    (p) =>
+      (p.to_step_id ?? p.from_step_id) === step.id &&
+      (p.problem ?? '').toLowerCase().slice(0, 60) === symptom.toLowerCase().slice(0, 60),
+  );
+  if (alreadyOpen) return;
+
+  await appendTransition(ctx.db, {
+    enrollmentId: enrollment.id,
+    eventType: 'hit_problem',
+    fromStepId: step.id,
+    toStepId: step.id,
+    problem: symptom,
+    source: 'inferred',
+    callId: ctx.session.call_id,
+  });
+}
+
 async function doDiagnose(ctx: ToolContext, args: Record<string, unknown>): Promise<ToolResult> {
   const symptom = typeof args.symptom === 'string' ? args.symptom : '';
   if (!symptom.trim()) return { data: { error: 'symptom is required' }, isError: true };
@@ -354,6 +394,7 @@ async function doDiagnose(ctx: ToolContext, args: Record<string, unknown>): Prom
 
   const matches = step ? await matchProblems(ctx.db, step.id, symptom) : [];
   await ctx.logEvent?.('problem_reported', { symptom, matched: matches.length }, step?.id ?? null);
+  await autoRecordProblem(ctx, enrollment, step, symptom);
 
   if (matches.length > 0) {
     return {

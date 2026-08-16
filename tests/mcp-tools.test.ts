@@ -193,6 +193,88 @@ describe('progress recording', () => {
   });
 });
 
+/**
+ * Regression cover for a failure seen on a real call: the coach diagnosed
+ * three problems and recorded none of them, because recording depended
+ * entirely on it choosing to call record_progress mid-conversation.
+ */
+describe('progress inferred from diagnosis', () => {
+  let db: DB;
+  beforeEach(() => {
+    db = createTestDb();
+  });
+
+  it('records a hit_problem when the coach diagnoses, without being asked to', async () => {
+    const world = makeWorld(db, 'Open');
+    await callTool(ctxFor(db, world.session), 'diagnose_problem', {
+      symptom: 'my starter smells like nail polish remover',
+    });
+
+    const rows = db
+      .prepare("SELECT * FROM state_transitions WHERE enrollment_id = ? AND event_type = 'hit_problem'")
+      .all(world.enrollment.id) as { problem: string; source: string; to_step_id: string }[];
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.problem).toContain('nail polish');
+    expect(rows[0]!.source).toBe('inferred');
+    // Recorded against the step they are actually standing on.
+    expect(rows[0]!.to_step_id).toBe(world.enrollment.current_step_id);
+  });
+
+  it('does not stack duplicates when the same symptom is diagnosed repeatedly', async () => {
+    const world = makeWorld(db, 'Open');
+    for (let i = 0; i < 3; i++) {
+      await callTool(ctxFor(db, world.session), 'diagnose_problem', {
+        symptom: 'my starter smells like nail polish remover',
+      });
+    }
+
+    const rows = db
+      .prepare("SELECT * FROM state_transitions WHERE enrollment_id = ? AND event_type = 'hit_problem'")
+      .all(world.enrollment.id);
+    expect(rows).toHaveLength(1);
+  });
+
+  it('records distinct symptoms separately', async () => {
+    const world = makeWorld(db, 'Open');
+    await callTool(ctxFor(db, world.session), 'diagnose_problem', { symptom: 'it sinks every time' });
+    await callTool(ctxFor(db, world.session), 'diagnose_problem', { symptom: 'it smells like acetone' });
+
+    const rows = db
+      .prepare("SELECT * FROM state_transitions WHERE enrollment_id = ? AND event_type = 'hit_problem'")
+      .all(world.enrollment.id);
+    expect(rows).toHaveLength(2);
+  });
+
+  it('reopens a problem that was previously resolved', async () => {
+    const world = makeWorld(db, 'Open');
+    await callTool(ctxFor(db, world.session), 'diagnose_problem', { symptom: 'it sinks every time' });
+    await callTool(ctxFor(db, world.session), 'record_progress', {
+      event: 'resolved_problem',
+      problem: 'it sinks every time',
+      resolution: 'tested at peak instead',
+    });
+    // Same trouble again on a later call: it is open again, not silently swallowed.
+    await callTool(ctxFor(db, world.session), 'diagnose_problem', { symptom: 'it sinks every time' });
+
+    const open = db
+      .prepare("SELECT * FROM state_transitions WHERE enrollment_id = ? AND event_type = 'hit_problem'")
+      .all(world.enrollment.id);
+    expect(open).toHaveLength(2);
+  });
+
+  it('records nothing for an unidentified caller', async () => {
+    const world = makeWorld(db, 'Open');
+    const anon = { ...world.session, customer_id: null, enrollment_id: null };
+    await callTool(ctxFor(db, anon), 'diagnose_problem', { symptom: 'it sinks every time' });
+
+    const rows = db
+      .prepare("SELECT * FROM state_transitions WHERE enrollment_id = ?")
+      .all(world.enrollment.id) as { event_type: string }[];
+    expect(rows.filter((r) => r.event_type === 'hit_problem')).toHaveLength(0);
+  });
+});
+
 describe('escalation', () => {
   let db: DB;
   beforeEach(() => {

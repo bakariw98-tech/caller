@@ -95,10 +95,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'record_progress',
     description:
-      'Record what changed for this caller. Call it as things happen during the call, not at the end. ' +
-      'Use hit_problem when they describe being stuck, resolved_problem once the fix has worked, ' +
-      'completed_step when they finish a step (this also moves them to the next one), and ' +
-      'noted_preference for something worth remembering about how they work.',
+      "Record what changed for this caller, the moment it changes — not at the end of the call, since " +
+      'calls drop. Two of these matter most and only you can know them: call resolved_problem the ' +
+      'moment the caller confirms a fix worked, and completed_step the moment they finish a step (that ' +
+      'also moves them to the next one). If a call ends without these, their next call starts from ' +
+      'stale information. Also use started_step and noted_preference where they fit. You do not need ' +
+      'to record a problem when you look one up — that is already recorded for you.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -309,6 +311,52 @@ function doSearch(ctx: ToolContext, args: Record<string, unknown>): ToolResult {
   };
 }
 
+/**
+ * Records that the caller hit a problem, inferred from the coach asking to
+ * diagnose one.
+ *
+ * Progress recording used to depend entirely on the model remembering to call
+ * `record_progress`. On a real call it never did — it diagnosed three problems
+ * and wrote down none of them, which quietly turns the whole product back into
+ * a smart FAQ. Asking a model to narrate its own bookkeeping while also
+ * conducting a conversation is a losing bet, so anything the server can infer
+ * from a tool the coach *already* has a reason to call is inferred here
+ * instead. Reaching for `diagnose_problem` means the caller is stuck: that is
+ * a `hit_problem` transition whether or not anyone says so.
+ *
+ * Explicit `record_progress` still owns what the server genuinely cannot see —
+ * chiefly whether a step was actually completed.
+ *
+ * Idempotent by (step, first 60 chars of problem) so repeated diagnoses of the
+ * same symptom in one conversation collapse into a single open problem, which
+ * matches how `openProblems` already keys them.
+ */
+function autoRecordProblem(
+  ctx: ToolContext,
+  enrollment: Enrollment | null,
+  step: Step | null,
+  symptom: string,
+): void {
+  if (!enrollment || !step) return;
+
+  const alreadyOpen = openProblems(ctx.db, enrollment.id).some(
+    (p) =>
+      (p.to_step_id ?? p.from_step_id) === step.id &&
+      (p.problem ?? '').toLowerCase().slice(0, 60) === symptom.toLowerCase().slice(0, 60),
+  );
+  if (alreadyOpen) return;
+
+  appendTransition(ctx.db, {
+    enrollmentId: enrollment.id,
+    eventType: 'hit_problem',
+    fromStepId: step.id,
+    toStepId: step.id,
+    problem: symptom,
+    source: 'inferred',
+    callId: ctx.session.call_id,
+  });
+}
+
 function doDiagnose(ctx: ToolContext, args: Record<string, unknown>): ToolResult {
   const symptom = typeof args.symptom === 'string' ? args.symptom : '';
   if (!symptom.trim()) return { data: { error: 'symptom is required' }, isError: true };
@@ -328,6 +376,7 @@ function doDiagnose(ctx: ToolContext, args: Record<string, unknown>): ToolResult
 
   const matches = step ? matchProblems(ctx.db, step.id, symptom) : [];
   ctx.logEvent?.('problem_reported', { symptom, matched: matches.length }, step?.id ?? null);
+  autoRecordProblem(ctx, enrollment, step, symptom);
 
   if (matches.length > 0) {
     return {
