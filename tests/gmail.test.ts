@@ -92,6 +92,36 @@ describe('listNewInboxMessages', () => {
     expect(calls).toHaveLength(2);
   });
 
+  it('catches a message that reaches INBOX via a labelsAdded event, not a messageAdded one', async () => {
+    // Found against a real Gmail account, not in the docs: a message that
+    // lands somewhere other than INBOX first (Gmail briefly filed it as
+    // spam, then reclassified it) generates a labelsAdded history entry for
+    // the move, not a second messagesAdded — filtering only on messageAdded
+    // silently drops it forever, since the cursor still advances past the
+    // event. This is the exact shape of the real history.list response that
+    // exposed the bug.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            history: [
+              { messagesAdded: [{ message: { id: 'm-caught-at-delivery', labelIds: ['INBOX'] } }] },
+              { labelsAdded: [{ message: { id: 'm-reclassified', labelIds: ['CATEGORY_PERSONAL', 'INBOX'] } }] },
+              // A labelsAdded event for a label that isn't INBOX (e.g. just
+              // STARRED) must not pull the message in.
+              { labelsAdded: [{ message: { id: 'm-just-starred', labelIds: ['STARRED'] } }] },
+            ],
+            historyId: '2000',
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+    const result = await listNewInboxMessages('token', '1900');
+    expect(result.newMessageIds.sort()).toEqual(['m-caught-at-delivery', 'm-reclassified']);
+  });
+
   it('excludes messagesAdded not labeled INBOX (e.g. mail that landed only in Sent)', async () => {
     vi.stubGlobal(
       'fetch',

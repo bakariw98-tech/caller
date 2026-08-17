@@ -206,11 +206,14 @@ export async function listNewInboxMessages(accessToken: string, sinceHistoryId: 
   let latestHistoryId = sinceHistoryId;
 
   do {
-    const params = new URLSearchParams({
-      startHistoryId: sinceHistoryId,
-      historyTypes: 'messageAdded',
-      labelId: 'INBOX',
-    });
+    const params = new URLSearchParams({ startHistoryId: sinceHistoryId });
+    // Deliberately NOT filtering by historyTypes=messageAdded&labelId=INBOX
+    // here — found by testing against a real account, not read in the docs:
+    // a message that lands somewhere other than INBOX first (spam, a filter)
+    // and then gets moved in generates a labelAdded event, not a second
+    // messageAdded, so that filter combination silently misses it. Fetching
+    // every event type and checking both messagesAdded and labelsAdded for a
+    // current INBOX label catches a message however it arrived at INBOX.
     if (pageToken) params.set('pageToken', pageToken);
 
     const res = await gmailFetch(accessToken, `/history?${params.toString()}`);
@@ -223,13 +226,19 @@ export async function listNewInboxMessages(accessToken: string, sinceHistoryId: 
     if (!res.ok) throw new Error(`gmail history.list failed: ${res.status} ${await res.text()}`);
 
     const json = (await res.json()) as {
-      history?: { messagesAdded?: { message: { id: string; labelIds?: string[] } }[] }[];
+      history?: {
+        messagesAdded?: { message: { id: string; labelIds?: string[] } }[];
+        labelsAdded?: { message: { id: string; labelIds?: string[] } }[];
+      }[];
       historyId?: string;
       nextPageToken?: string;
     };
 
     for (const h of json.history ?? []) {
       for (const added of h.messagesAdded ?? []) {
+        if (added.message.labelIds?.includes('INBOX')) ids.add(added.message.id);
+      }
+      for (const added of h.labelsAdded ?? []) {
         if (added.message.labelIds?.includes('INBOX')) ids.add(added.message.id);
       }
     }
