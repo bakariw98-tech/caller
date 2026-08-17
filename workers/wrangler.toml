@@ -17,10 +17,14 @@ tag = "v1"
 new_sqlite_classes = ["CallSessionDO"]
 
 # Polls every connected creator's Gmail inbox — see workers/email/poll.ts.
-# Every 2 minutes: fast enough that a prospect isn't waiting long, and a
-# handful of quota units against Gmail's 6,000/min-per-user budget either way.
+# Every minute, the fastest a Cron Trigger can run: worst-case wait for a
+# prospect is under 60 seconds, and the cost is still a handful of quota
+# units against Gmail's 6,000/min-per-user budget. True instant delivery
+# would mean Gmail push (Pub/Sub) instead of polling at all — deferred, see
+# plan history, since it needs another manual Google Cloud console step and
+# a recurring subscription-renewal job.
 [triggers]
-crons = ["*/2 * * * *"]
+crons = ["* * * * *"]
 
 # --- Non-secret vars. Secrets (XAI_API_KEY, MCP_TOKEN_SECRET, ADMIN_TOKEN,
 # XAI_WEBHOOK_SIGNING_SECRET) are NOT set here — see docs/DEPLOY.md, they go
