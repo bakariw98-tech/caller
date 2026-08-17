@@ -275,11 +275,24 @@ export interface OutboundMessage {
   references?: string | null;
 }
 
-/** Builds the base64url raw MIME message users.messages.send expects. Pure and unit-testable — no network. */
+/**
+ * Builds the base64url raw MIME message users.messages.send expects. Pure
+ * and unit-testable — no network.
+ *
+ * The header/body blank line is structural, not optional. RFC 5322 requires
+ * an empty line to mark where headers end and the body begins; without it,
+ * a parser has no boundary and folds the body into the last header instead
+ * of treating it as message content, which reads as an empty reply — found
+ * by a real reply landing empty in a real inbox, not by re-reading this
+ * function. So the optional-header filtering and the separator are kept
+ * apart: only the header lines that might legitimately be blank (a missing
+ * In-Reply-To/References) get filtered, and the separator is appended after,
+ * unconditionally.
+ */
 export function buildRawMessage(msg: OutboundMessage): string {
   const fromHeader = msg.fromName ? `${encodeHeaderValue(msg.fromName)} <${msg.from}>` : msg.from;
   const references = [msg.references, msg.inReplyTo].filter(Boolean).join(' ');
-  const lines = [
+  const headers = [
     `From: ${fromHeader}`,
     `To: ${msg.to}`,
     `Subject: ${encodeHeaderValue(msg.subject)}`,
@@ -287,10 +300,8 @@ export function buildRawMessage(msg: OutboundMessage): string {
     `Content-Transfer-Encoding: 7bit`,
     msg.inReplyTo ? `In-Reply-To: ${msg.inReplyTo}` : '',
     references ? `References: ${references}` : '',
-    '',
-    msg.bodyText,
   ].filter((l) => l !== '');
-  return base64UrlEncode(lines.join('\r\n'));
+  return base64UrlEncode([...headers, '', msg.bodyText].join('\r\n'));
 }
 
 /** Sends a reply, keeping it in the same Gmail thread as the message it answers. */

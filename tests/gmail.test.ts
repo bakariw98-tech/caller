@@ -6,6 +6,21 @@ function decodeRaw(raw: string): string {
   return Buffer.from(b64, 'base64').toString('utf-8');
 }
 
+/**
+ * Splits a decoded raw message into its header block and body the way a real
+ * MIME parser does: on the first blank line. Used to assert the message is
+ * structurally a header section plus a body, not just that the body text
+ * happens to appear somewhere in the string — `toContain` alone missed a
+ * real bug where the blank separator got stripped and the body silently
+ * merged into the last header, which every mail client then rendered as an
+ * empty message even though the text was technically present in the bytes.
+ */
+function splitMessage(decoded: string): { headers: string; body: string } {
+  const sep = decoded.indexOf('\r\n\r\n');
+  if (sep === -1) return { headers: decoded, body: '' };
+  return { headers: decoded.slice(0, sep), body: decoded.slice(sep + 4) };
+}
+
 describe('buildRawMessage', () => {
   it('includes the standard headers and body', () => {
     const raw = buildRawMessage({
@@ -19,7 +34,14 @@ describe('buildRawMessage', () => {
     expect(decoded).toContain('From: Marcus <coach@gmail.com>');
     expect(decoded).toContain('To: prospect@example.com');
     expect(decoded).toContain('Subject: Re: pricing');
-    expect(decoded).toContain('Price the timeline, not the video.');
+    // Structural check, not just substring presence: the body must be
+    // separated from the headers by a blank line and be exactly the body,
+    // not folded into the last header. This is the exact bug a real reply
+    // landing empty in a real inbox exposed — a plain toContain() on the
+    // body text alone stayed green even while every message shipped empty.
+    const { headers, body } = splitMessage(decoded);
+    expect(headers).not.toContain('Price the timeline');
+    expect(body).toBe('Price the timeline, not the video.');
   });
 
   it('threads the reply with In-Reply-To and References when given the original Message-Id', () => {
@@ -28,7 +50,7 @@ describe('buildRawMessage', () => {
       from: 'coach@gmail.com',
       fromName: 'Marcus',
       subject: 'Re: pricing',
-      bodyText: 'body',
+      bodyText: 'body text here',
       inReplyTo: '<abc123@mail.gmail.com>',
       references: '<earlier@mail.gmail.com>',
     });
@@ -37,13 +59,17 @@ describe('buildRawMessage', () => {
     // References must carry the whole chain, not just the newest message, or
     // clients that thread strictly off References lose the thread.
     expect(decoded).toContain('References: <earlier@mail.gmail.com> <abc123@mail.gmail.com>');
+    // Threading headers are exactly the case that previously ate the blank
+    // separator every time, since they're always present on a reply.
+    expect(splitMessage(decoded).body).toBe('body text here');
   });
 
-  it('omits In-Reply-To/References entirely when there is nothing to reply to', () => {
-    const raw = buildRawMessage({ to: 'p@example.com', from: 'c@gmail.com', fromName: null, subject: 'Hi', bodyText: 'body' });
+  it('omits In-Reply-To/References entirely when there is nothing to reply to, but still separates the body', () => {
+    const raw = buildRawMessage({ to: 'p@example.com', from: 'c@gmail.com', fromName: null, subject: 'Hi', bodyText: 'body text here' });
     const decoded = decodeRaw(raw);
     expect(decoded).not.toContain('In-Reply-To');
     expect(decoded).not.toContain('References');
+    expect(splitMessage(decoded).body).toBe('body text here');
   });
 
   it('encodes a non-ASCII subject rather than sending raw UTF-8 bytes in a header', () => {
