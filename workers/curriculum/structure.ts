@@ -1,5 +1,5 @@
 import { courseSchema, type ParsedCourse } from '../../src/curriculum/schema.js';
-import { chatCompletionJson } from '../xai/client.js';
+import { chatCompletionJson, USD_PER_TICK } from '../xai/client.js';
 
 /**
  * Turns a creator's raw material into structured curriculum.
@@ -299,7 +299,7 @@ export async function structureCurriculum(
     usage: {
       promptTokens: usage.prompt_tokens ?? 0,
       completionTokens: usage.completion_tokens ?? 0,
-      costUsd: (usage.cost_in_usd_ticks ?? 0) / 1e9,
+      costUsd: (usage.cost_in_usd_ticks ?? 0) * USD_PER_TICK,
     },
   };
 }

@@ -326,3 +326,109 @@ CREATE TABLE IF NOT EXISTS coaching_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_customer ON coaching_sessions(customer_id, last_activity_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_creator ON coaching_sessions(creator_id, started_at DESC);
+
+-- ============================================================ lead engine ==
+--
+-- A second product on the same platform, sharing `creators`. The phone coach
+-- above serves people who already bought; everything below serves the ones who
+-- have not — a cold prospect who found the creator through a video or podcast,
+-- emailed a question, and has bought nothing.
+--
+-- That difference drives the shape of these tables. Curriculum above is indexed
+-- by sequence, because a student knows which step they are on. Knowledge here
+-- is indexed by *problem*, because a prospect arrives with a situation and no
+-- idea which of two hundred videos addressed it.
+
+-- Creator's paid products. Supplied by the creator directly and never
+-- extracted from content: claiming an offer covers something it does not is
+-- the fastest way to burn the creator's credibility with their own audience.
+CREATE TABLE IF NOT EXISTS offers (
+  id          TEXT PRIMARY KEY,
+  creator_id  TEXT NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL DEFAULT 'course',
+  name        TEXT NOT NULL,
+  who_for     TEXT,
+  covers      TEXT,
+  price_text  TEXT,
+  url         TEXT,
+  active      INTEGER NOT NULL DEFAULT 1,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_offers_creator ON offers(creator_id, active);
+
+-- Free content, extracted and indexed by the problem it addresses.
+--
+-- `boundary` is the load-bearing column. It records where the free material
+-- genuinely stops on this topic, and it is the only thing routing is allowed
+-- to fire on. Without it the model would have to decide for itself when to
+-- start selling, which is exactly the dishonesty that destroys the product.
+-- NULL means the free content answers this fully — answer it and do not pitch.
+CREATE TABLE IF NOT EXISTS knowledge_items (
+  id                  TEXT PRIMARY KEY,
+  creator_id          TEXT NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+  problem             TEXT NOT NULL,
+  who_for             TEXT,
+  guidance            TEXT NOT NULL,
+  framework_terms_json TEXT NOT NULL DEFAULT '[]',
+  -- Creators repeat core ideas across dozens of videos; one concept collapses
+  -- into one row carrying every place it was said.
+  source_refs_json    TEXT NOT NULL DEFAULT '[]',
+  source_quote        TEXT,
+  boundary            TEXT,
+  boundary_offer_id   TEXT REFERENCES offers(id) ON DELETE SET NULL,
+  created_at          INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_creator ON knowledge_items(creator_id);
+
+-- The lead record. Matched by sender address rather than mail thread, so
+-- somebody writing again three weeks later with a fresh subject is still the
+-- same person and their history loads.
+CREATE TABLE IF NOT EXISTS prospects (
+  id              TEXT PRIMARY KEY,
+  creator_id      TEXT NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+  email           TEXT NOT NULL,
+  name            TEXT,
+  situation       TEXT,
+  tried           TEXT,
+  blocked_on      TEXT,
+  objections_json TEXT NOT NULL DEFAULT '[]',
+  topics_json     TEXT NOT NULL DEFAULT '[]',
+  exchanges       INTEGER NOT NULL DEFAULT 0,
+  hit_boundary    INTEGER NOT NULL DEFAULT 0,
+  clicked_offer   INTEGER NOT NULL DEFAULT 0,
+  score           INTEGER NOT NULL DEFAULT 0,
+  first_seen_at   INTEGER NOT NULL,
+  last_seen_at    INTEGER NOT NULL,
+  UNIQUE (creator_id, email)
+);
+CREATE INDEX IF NOT EXISTS idx_prospects_creator ON prospects(creator_id, score DESC);
+
+-- Full conversation, both directions. Token and cost columns are on the
+-- outbound rows because this product pays for its own inference — cost per
+-- conversation has to be a measured number before tiers are priced, not an
+-- estimate discovered afterwards.
+CREATE TABLE IF NOT EXISTS prospect_messages (
+  id                TEXT PRIMARY KEY,
+  prospect_id       TEXT NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
+  creator_id        TEXT NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+  direction         TEXT NOT NULL,
+  subject           TEXT,
+  body              TEXT NOT NULL,
+  routed_offer_id   TEXT REFERENCES offers(id) ON DELETE SET NULL,
+  prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_usd_micros   INTEGER NOT NULL DEFAULT 0,
+  created_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_messages_prospect ON prospect_messages(prospect_id, created_at);
+
+-- Attribution from day one: "did this make me money" is the question every
+-- creator asks, and it is what justifies moving up a tier.
+CREATE TABLE IF NOT EXISTS offer_clicks (
+  id          TEXT PRIMARY KEY,
+  creator_id  TEXT NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+  prospect_id TEXT REFERENCES prospects(id) ON DELETE SET NULL,
+  offer_id    TEXT NOT NULL REFERENCES offers(id) ON DELETE CASCADE,
+  clicked_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_clicks_creator ON offer_clicks(creator_id, clicked_at DESC);

@@ -60,6 +60,29 @@ export interface ChatUsage {
 }
 
 /**
+ * USD per unit of xAI's `cost_in_usd_ticks`.
+ *
+ * xAI documents neither this field's unit nor that of the `*_token_price`
+ * fields on /v1/language-models, so it was derived rather than assumed: three
+ * calls of differing shape solve to 12,500 ticks per uncached prompt token,
+ * 2,000 cached, 25,000 completion — exactly the prices that endpoint reports
+ * for grok-4.20-non-reasoning. The published rates for those same three are
+ * $1.25, $0.20 and $2.50 per million tokens, which fixes one tick at 1e-10 USD
+ * on all three independently.
+ *
+ * This was 1e-9 until it was checked against the docs, which overstated every
+ * measured cost tenfold. Worth stating plainly because pricing decisions are
+ * meant to be made from these numbers, and a 10x error in the input is a 10x
+ * error in the margin.
+ *
+ * Long-context prompts (>200k tokens) bill at double these rates. Nothing here
+ * approaches that — the largest prompt this system builds is a few thousand
+ * tokens — so the reported cost would understate a long-context call.
+ */
+export const USD_PER_TICK = 1e-10;
+
+
+/**
  * Text inference with a required JSON schema.
  *
  * `strict: true` means the response is guaranteed to match the schema
