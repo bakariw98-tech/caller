@@ -16,6 +16,12 @@ class_name = "CallSessionDO"
 tag = "v1"
 new_sqlite_classes = ["CallSessionDO"]
 
+# Polls every connected creator's Gmail inbox — see workers/email/poll.ts.
+# Every 2 minutes: fast enough that a prospect isn't waiting long, and a
+# handful of quota units against Gmail's 6,000/min-per-user budget either way.
+[triggers]
+crons = ["*/2 * * * *"]
+
 # --- Non-secret vars. Secrets (XAI_API_KEY, MCP_TOKEN_SECRET, ADMIN_TOKEN,
 # XAI_WEBHOOK_SIGNING_SECRET) are NOT set here — see docs/DEPLOY.md, they go
 # in via `wrangler secret put` so they never end up in this file or in git. ---

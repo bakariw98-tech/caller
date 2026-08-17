@@ -4,13 +4,8 @@ import { wrapD1 } from '../db/d1-adapter.js';
 import { id, now, hmacHex } from '../../src/util/ids.js';
 import type { Creator } from '../../src/domain/types.js';
 import { extractFreeContent, NoUsableContentError, type FreeContentSource } from '../leadgen/extract.js';
-import {
-  generateReply,
-  loadKnowledge,
-  loadOffers,
-  selectKnowledge,
-  scoreProspect,
-} from '../leadgen/reply.js';
+import { loadOffers } from '../leadgen/reply.js';
+import { runLeadgenPipeline, CreatorNotFoundError } from '../leadgen/pipeline.js';
 
 export const leadgenRoute = new Hono<{ Bindings: Env }>();
 
@@ -211,150 +206,34 @@ leadgenRoute.post('/api/leadgen/simulate', async (c) => {
     return c.json({ error: 'creator_id, from_email and text are required' }, 400);
   }
 
-  const creator = await db.prepare('SELECT * FROM creators WHERE id = ?').get<Creator>(creatorId);
-  if (!creator) return c.json({ error: 'creator not found' }, 404);
-
-  const persist = b.persist !== false;
-
-  // Matched by sender address, never by mail thread — somebody writing again
-  // weeks later under a new subject is the same person and their history
-  // should load.
-  let prospect = await db
-    .prepare('SELECT * FROM prospects WHERE creator_id = ? AND email = ?')
-    .get<Record<string, any>>(creatorId, email);
-
-  if (!prospect && persist) {
-    const pid = id('prospect');
-    await db
-      .prepare(
-        `INSERT INTO prospects (id, creator_id, email, name, first_seen_at, last_seen_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run(pid, creatorId, email, b.from_name ?? null, now(), now());
-    prospect = await db.prepare('SELECT * FROM prospects WHERE id = ?').get<Record<string, any>>(pid);
-  }
-
-  const history = prospect
-    ? await db
-        .prepare('SELECT direction, body FROM prospect_messages WHERE prospect_id = ? ORDER BY created_at')
-        .all<{ direction: string; body: string }>(prospect.id)
-    : [];
-
-  const allKnowledge = await loadKnowledge(db, creatorId);
-  const offers = await loadOffers(db, creatorId);
-  const knowledge = selectKnowledge(allKnowledge, question);
-
-  const terminology = [
-    ...new Set(
-      allKnowledge.flatMap((k) => {
-        try {
-          const t = JSON.parse(k.framework_terms_json);
-          return Array.isArray(t) ? t.filter((x) => typeof x === 'string') : [];
-        } catch {
-          return [];
-        }
-      }),
-    ),
-  ].slice(0, 40);
-
-  const base = c.env.PUBLIC_BASE_URL;
-  const secret = c.env.MCP_TOKEN_SECRET;
-
-  const generated = await generateReply({
-    apiBase: c.env.XAI_API_BASE,
-    apiKey: c.env.XAI_API_KEY,
-    model: c.env.XAI_TEXT_MODEL,
-    creator,
-    question,
-    knowledge,
-    offers,
-    terminology,
-    prospect: {
-      name: prospect?.name ?? b.from_name ?? null,
-      situation: prospect?.situation ?? null,
-      tried: prospect?.tried ?? null,
-      blocked_on: prospect?.blocked_on ?? null,
-      objections: safeArr(prospect?.objections_json),
-      priorExchanges: prospect?.exchanges ?? 0,
-    },
-    history,
-    // Signed so a click cannot be forged into another creator's attribution.
-    offerLink: (offerId) =>
-      `${base}/r/${offerId}.${prospect ? prospect.id : 'anon'}.${hmacHex(secret, `${offerId}:${prospect ? prospect.id : 'anon'}`).slice(0, 16)}`,
-  });
-
-  if (persist && prospect) {
-    const s = generated.signals;
-    const objections = [...new Set([...safeArr(prospect.objections_json), ...s.objections])];
-    const topics = [...new Set([...safeArr(prospect.topics_json), ...s.topics])];
-    const exchanges = (prospect.exchanges ?? 0) + 1;
-    const hitBoundary = prospect.hit_boundary || s.hit_boundary ? 1 : 0;
-
-    const score = scoreProspect({
-      exchanges,
-      hit_boundary: hitBoundary,
-      clicked_offer: prospect.clicked_offer,
-      situation: s.situation ?? prospect.situation,
-      blocked_on: s.blocked_on ?? prospect.blocked_on,
+  let result;
+  try {
+    result = await runLeadgenPipeline({
+      db,
+      apiBase: c.env.XAI_API_BASE,
+      apiKey: c.env.XAI_API_KEY,
+      model: c.env.XAI_TEXT_MODEL,
+      publicBaseUrl: c.env.PUBLIC_BASE_URL,
+      mcpTokenSecret: c.env.MCP_TOKEN_SECRET,
+      creatorId,
+      fromEmail: email,
+      fromName: b.from_name,
+      subject: b.subject,
+      text: question,
+      persist: b.persist,
     });
-
-    await db
-      .prepare(
-        `UPDATE prospects
-            SET situation = COALESCE(?, situation), tried = COALESCE(?, tried),
-                blocked_on = COALESCE(?, blocked_on), objections_json = ?, topics_json = ?,
-                exchanges = ?, hit_boundary = ?, score = ?, last_seen_at = ?, name = COALESCE(name, ?)
-          WHERE id = ?`,
-      )
-      .run(
-        s.situation,
-        s.tried,
-        s.blocked_on,
-        JSON.stringify(objections),
-        JSON.stringify(topics),
-        exchanges,
-        hitBoundary,
-        score,
-        now(),
-        b.from_name ?? null,
-        prospect.id,
-      );
-
-    await db
-      .prepare(
-        `INSERT INTO prospect_messages (id, prospect_id, creator_id, direction, subject, body, created_at)
-         VALUES (?, ?, ?, 'inbound', ?, ?, ?)`,
-      )
-      .run(id('msg'), prospect.id, creatorId, b.subject ?? null, question, now());
-
-    await db
-      .prepare(
-        `INSERT INTO prospect_messages
-           (id, prospect_id, creator_id, direction, subject, body, routed_offer_id,
-            prompt_tokens, completion_tokens, cost_usd_micros, created_at)
-         VALUES (?, ?, ?, 'outbound', ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        id('msg'),
-        prospect.id,
-        creatorId,
-        b.subject ? `Re: ${b.subject}` : null,
-        generated.body,
-        generated.routedOfferId,
-        generated.usage.promptTokens,
-        generated.usage.completionTokens,
-        Math.round(generated.usage.costUsd * 1e6),
-        now(),
-      );
+  } catch (err) {
+    if (err instanceof CreatorNotFoundError) return c.json({ error: 'creator not found' }, 404);
+    throw err;
   }
 
   return c.json({
-    reply: generated.body,
-    signals: generated.signals,
-    routed_offer_id: generated.routedOfferId,
-    knowledge_used: knowledge.map((k) => ({ problem: k.problem, had_boundary: Boolean(k.boundary) })),
-    prospect_id: prospect?.id ?? null,
-    usage: generated.usage,
+    reply: result.reply,
+    signals: result.signals,
+    routed_offer_id: result.routedOfferId,
+    knowledge_used: result.knowledgeUsed,
+    prospect_id: result.prospectId,
+    usage: result.usage,
   });
 });
 
@@ -369,12 +248,3 @@ leadgenRoute.get('/api/creators/:id/prospects', async (c) => {
   return c.json({ count: rows.length, prospects: rows });
 });
 
-function safeArr(json: unknown): string[] {
-  if (typeof json !== 'string') return [];
-  try {
-    const p = JSON.parse(json);
-    return Array.isArray(p) ? p.filter((x) => typeof x === 'string') : [];
-  } catch {
-    return [];
-  }
-}

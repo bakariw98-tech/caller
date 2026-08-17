@@ -129,6 +129,79 @@ deployment so far), not a per-creator login. True multi-creator self-serve
 (each creator with their own account, unable to touch another's data) is a
 separate, bigger feature this does not build.
 
+## Email transport for the lead engine — Gmail, no domain
+
+The lead engine (offers, free-content ingestion, `/api/leadgen/simulate`) is
+built and tested. This is the last-mile piece: actually receiving a
+prospect's email and sending the reply, without owning a domain.
+`workers.dev` genuinely cannot receive mail, so Cloudflare Email Service is
+out — but a single Gmail account works, connected over OAuth, with a Cron
+Trigger polling for what's new. See the plan history for the research behind
+this (verification tiers, refresh-token expiry, why polling over Pub/Sub).
+
+**One real trade-off**: without a domain, replies come *from* a real
+`@gmail.com` address, not `hello@cutroomclub.com`. The display name can read
+"Marcus @ Cutroom Club"; the visible address is still gmail.com.
+
+### 1. One Google Cloud project, shared by every creator
+
+This step happens once total, not once per creator — one OAuth client
+authorizes as many creators' Gmail accounts as connect to it.
+
+1. Go to [console.cloud.google.com](https://console.cloud.google.com), create
+   a project (or reuse one), and enable the **Gmail API** under APIs &
+   Services → Library.
+2. APIs & Services → **OAuth consent screen**: User type **External**. Add
+   scopes `https://www.googleapis.com/auth/gmail.send` and
+   `https://www.googleapis.com/auth/gmail.modify`.
+3. **Publishing status: click "Publish App" to move it to "In production."**
+   This is the step that matters — leaving it in "Testing" issues refresh
+   tokens that expire in 7 days, unusable for an unattended backend. "In
+   production" while unverified is capped at 100 total authorizing users for
+   the app's lifetime; we need exactly one Gmail account per creator, so this
+   cap isn't a practical concern.
+4. APIs & Services → **Credentials** → Create Credentials → **OAuth client
+   ID** → Application type **Web application**. Add this authorized redirect
+   URI (exact, no trailing slash):
+   ```
+   https://caller-coach.bakariw98.workers.dev/oauth/gmail/callback
+   ```
+5. Copy the **Client ID** and **Client Secret**, then set them:
+   ```bash
+   npx wrangler secret put GOOGLE_OAUTH_CLIENT_ID
+   npx wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET
+   ```
+
+### 2. Connect a creator's Gmail account
+
+Pick a dedicated Gmail address for the creator (its name is what prospects
+see — not a personal inbox). Then:
+
+```bash
+curl -s "$BASE/api/creators/<id>/email/connect" -H "Authorization: Bearer $TOKEN"
+# -> { "url": "https://accounts.google.com/o/oauth2/v2/auth?..." }
+```
+
+Open that URL in a browser **signed into the creator's Gmail account**, click
+through the "Google hasn't verified this app" warning (expected — this app
+intentionally stays unverified rather than going through Google's security
+assessment for a single-account integration), and click Allow. You'll land on
+a plain confirmation page once `/oauth/gmail/callback` stores the connection.
+
+### 3. Test it without waiting for the Cron Trigger
+
+The scheduled poll runs every 2 minutes in production. For fast iteration,
+trigger one pass on demand:
+
+```bash
+curl -s -X POST "$BASE/api/admin/email/poll" -H "Authorization: Bearer $TOKEN"
+```
+
+Send a real email to the connected Gmail address from a different account,
+then call the endpoint above. It returns a summary
+(`connectionsChecked`/`messagesProcessed`/`errors`), and the reply lands back
+in the sender's inbox, threaded under the original message.
+
 ## What isn't ported yet
 
 The call path — webhook, Durable Object, MCP tools, billing, structure audit,

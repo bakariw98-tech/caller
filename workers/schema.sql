@@ -432,3 +432,22 @@ CREATE TABLE IF NOT EXISTS offer_clicks (
   clicked_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_clicks_creator ON offer_clicks(creator_id, clicked_at DESC);
+
+-- Per-creator Gmail connection for the email transport. OAuth is per Gmail
+-- account, so the refresh token lives here rather than as a Worker secret,
+-- the same reasoning as phone_numbers.signing_secret being per-row instead
+-- of global — one Google Cloud project's client id/secret are the only part
+-- that's shared, and those live in Worker secrets alongside XAI_API_KEY.
+--
+-- history_id is Gmail's own sync cursor (see users.history.list): storing it
+-- per connection is what lets polling ask "what's new since last time"
+-- instead of re-scanning the whole inbox and re-processing old mail.
+CREATE TABLE IF NOT EXISTS email_connections (
+  id            TEXT PRIMARY KEY,
+  creator_id    TEXT NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+  gmail_address TEXT NOT NULL,
+  refresh_token TEXT NOT NULL,
+  history_id    TEXT NOT NULL,
+  connected_at  INTEGER NOT NULL,
+  UNIQUE(creator_id)
+);

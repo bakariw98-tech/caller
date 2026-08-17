@@ -16,6 +16,12 @@ export interface Env {
   MCP_TOKEN_SECRET: string;
   ADMIN_TOKEN: string;
 
+  // Gmail transport for the lead engine. One Google Cloud project's OAuth
+  // client is shared across every creator; each creator's own refresh token
+  // is per-row in email_connections, not here — see workers/schema.sql.
+  GOOGLE_OAUTH_CLIENT_ID: string;
+  GOOGLE_OAUTH_CLIENT_SECRET: string;
+
   PLATFORM_MIN_PRICE_PER_MINUTE_CENTS: string;
   PLATFORM_AUDIO_COST_PER_MINUTE_CENTS: string;
   MAX_SESSION_SECONDS: string;
