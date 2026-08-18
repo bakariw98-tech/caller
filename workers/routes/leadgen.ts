@@ -174,6 +174,124 @@ leadgenRoute.get('/api/creators/:id/knowledge', async (c) => {
   return c.json({ count: rows.length, items: rows });
 });
 
+/**
+ * Edits one knowledge item.
+ *
+ * Extraction is deliberately conservative and leaves gaps rather than
+ * inventing, so the creator is the one who fills them — this is how a wrong
+ * boundary or an awkwardly-phrased problem gets fixed without re-ingesting
+ * everything. Only the fields sent are touched; `boundary: null` clears it,
+ * which is the difference between "this topic pitches" and "this topic is
+ * answered in full".
+ */
+leadgenRoute.patch('/api/creators/:id/knowledge/:itemId', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const itemId = c.req.param('itemId');
+  const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+
+  const existing = await db
+    .prepare('SELECT id FROM knowledge_items WHERE id = ? AND creator_id = ?')
+    .get<{ id: string }>(itemId, creatorId);
+  if (!existing) return c.json({ error: 'not found' }, 404);
+
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  if (typeof b.problem === 'string' && b.problem.trim()) {
+    sets.push('problem = ?');
+    vals.push(b.problem.trim());
+  }
+  if (typeof b.guidance === 'string' && b.guidance.trim()) {
+    sets.push('guidance = ?');
+    vals.push(b.guidance.trim());
+  }
+  if ('who_for' in b) {
+    sets.push('who_for = ?');
+    vals.push(b.who_for ? String(b.who_for) : null);
+  }
+  if ('boundary' in b) {
+    sets.push('boundary = ?');
+    vals.push(b.boundary ? String(b.boundary) : null);
+    // A boundary with no offer behind it can never route, so clearing one
+    // clears the other rather than leaving a dangling half-configuration.
+    if (!b.boundary) {
+      sets.push('boundary_offer_id = ?');
+      vals.push(null);
+    }
+  }
+  if ('boundary_offer_id' in b) {
+    sets.push('boundary_offer_id = ?');
+    vals.push(b.boundary_offer_id ? String(b.boundary_offer_id) : null);
+  }
+  if (!sets.length) return c.json({ error: 'nothing to update' }, 400);
+
+  vals.push(itemId);
+  await db.prepare(`UPDATE knowledge_items SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  return c.json({ ok: true });
+});
+
+leadgenRoute.delete('/api/creators/:id/knowledge/:itemId', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const res = await db
+    .prepare('DELETE FROM knowledge_items WHERE id = ? AND creator_id = ?')
+    .run(c.req.param('itemId'), c.req.param('id'));
+  return c.json({ ok: true, deleted: res });
+});
+
+leadgenRoute.delete('/api/creators/:id/offers/:offerId', async (c) => {
+  const db = wrapD1(c.env.DB);
+  // Soft-delete: knowledge_items may still point at this offer as what lies
+  // past a boundary, and hard-deleting would silently turn those into
+  // boundaries that route nowhere.
+  await db
+    .prepare('UPDATE offers SET active = 0 WHERE id = ? AND creator_id = ?')
+    .run(c.req.param('offerId'), c.req.param('id'));
+  return c.json({ ok: true });
+});
+
+/** Everything the dashboard needs to render its header in one call. */
+leadgenRoute.get('/api/creators/:id/overview', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const creator = await db
+    .prepare('SELECT id, business_name, coach_name, audience, teaching_style, status FROM creators WHERE id = ?')
+    .get<Record<string, unknown>>(creatorId);
+  if (!creator) return c.json({ error: 'creator not found' }, 404);
+
+  const conn = await db
+    .prepare('SELECT gmail_address, connected_at FROM email_connections WHERE creator_id = ?')
+    .get<{ gmail_address: string; connected_at: number }>(creatorId);
+  const counts = await db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM knowledge_items WHERE creator_id = ?) AS knowledge,
+         (SELECT COUNT(*) FROM knowledge_items WHERE creator_id = ? AND boundary IS NOT NULL) AS boundaries,
+         (SELECT COUNT(*) FROM offers WHERE creator_id = ? AND active = 1) AS offers,
+         (SELECT COUNT(*) FROM prospects WHERE creator_id = ?) AS prospects`,
+    )
+    .get<Record<string, number>>(creatorId, creatorId, creatorId, creatorId);
+
+  return c.json({ creator, email: conn ?? null, counts });
+});
+
+leadgenRoute.patch('/api/creators/:id/settings', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const allowed = ['business_name', 'coach_name', 'audience', 'teaching_style'];
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  for (const key of allowed) {
+    if (key in b) {
+      sets.push(`${key} = ?`);
+      vals.push(b[key] ? String(b[key]) : null);
+    }
+  }
+  if (!sets.length) return c.json({ error: 'nothing to update' }, 400);
+  vals.push(now(), c.req.param('id'));
+  await db.prepare(`UPDATE creators SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`).run(...vals);
+  return c.json({ ok: true });
+});
+
 // -------------------------------------------------------------- the brain --
 
 /**
