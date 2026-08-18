@@ -100,6 +100,7 @@ export interface InboundMessage {
   messageId: string | null; // the RFC 2822 Message-Id header, for In-Reply-To/References
   references: string | null;
   text: string;
+  labelIds: string[];
 }
 
 function headerValue(headers: { name: string; value: string }[] | undefined, name: string): string | null {
@@ -180,6 +181,7 @@ export async function getMessage(accessToken: string, gmailId: string): Promise<
     messageId: headerValue(headers, 'Message-Id') ?? headerValue(headers, 'Message-ID'),
     references: headerValue(headers, 'References'),
     text: extractBody(json.payload),
+    labelIds: json.labelIds ?? [],
   };
 }
 
@@ -194,11 +196,24 @@ export interface HistoryResult {
 }
 
 /**
- * Lists what's new in the inbox since `sinceHistoryId`, paginating as needed.
+ * Lists what's new since `sinceHistoryId`, paginating as needed.
  *
  * Google's documented sync pattern (see /v1/users.history/list): historyId
  * is a cursor, not a timestamp, and the caller is expected to walk pages via
  * nextPageToken and adopt the last page's historyId as the next cursor.
+ *
+ * Returns CANDIDATE ids, not confirmed-INBOX ids — deliberately. Two rounds
+ * of testing against a real account found Gmail representing "this message
+ * changed" in shapes the docs don't fully enumerate: `messagesAdded` and
+ * `labelsAdded` sub-arrays (each carrying their own `labelIds` snapshot), and
+ * — found on a message that never got caught by either — a bare top-level
+ * `messages` array with no sub-array at all and no labelIds included. Trying
+ * to keep guessing every shape Gmail might use and filtering on whatever
+ * labelIds happens to be embedded where is chasing an undocumented surface
+ * that keeps growing. Instead: collect every id mentioned anywhere in the
+ * history response, by any shape, and let the one authoritative source — an
+ * actual fetch of that message — decide whether it's currently in INBOX.
+ * More API calls, but correct by construction rather than by enumeration.
  */
 export async function listNewInboxMessages(accessToken: string, sinceHistoryId: string): Promise<HistoryResult> {
   const ids = new Set<string>();
@@ -207,13 +222,6 @@ export async function listNewInboxMessages(accessToken: string, sinceHistoryId: 
 
   do {
     const params = new URLSearchParams({ startHistoryId: sinceHistoryId });
-    // Deliberately NOT filtering by historyTypes=messageAdded&labelId=INBOX
-    // here — found by testing against a real account, not read in the docs:
-    // a message that lands somewhere other than INBOX first (spam, a filter)
-    // and then gets moved in generates a labelAdded event, not a second
-    // messageAdded, so that filter combination silently misses it. Fetching
-    // every event type and checking both messagesAdded and labelsAdded for a
-    // current INBOX label catches a message however it arrived at INBOX.
     if (pageToken) params.set('pageToken', pageToken);
 
     const res = await gmailFetch(accessToken, `/history?${params.toString()}`);
@@ -226,27 +234,39 @@ export async function listNewInboxMessages(accessToken: string, sinceHistoryId: 
     if (!res.ok) throw new Error(`gmail history.list failed: ${res.status} ${await res.text()}`);
 
     const json = (await res.json()) as {
-      history?: {
-        messagesAdded?: { message: { id: string; labelIds?: string[] } }[];
-        labelsAdded?: { message: { id: string; labelIds?: string[] } }[];
-      }[];
+      history?: Record<string, unknown>[];
       historyId?: string;
       nextPageToken?: string;
     };
 
     for (const h of json.history ?? []) {
-      for (const added of h.messagesAdded ?? []) {
-        if (added.message.labelIds?.includes('INBOX')) ids.add(added.message.id);
-      }
-      for (const added of h.labelsAdded ?? []) {
-        if (added.message.labelIds?.includes('INBOX')) ids.add(added.message.id);
-      }
+      collectMessageIds(h, ids);
     }
     if (json.historyId) latestHistoryId = json.historyId;
     pageToken = json.nextPageToken;
   } while (pageToken);
 
   return { newMessageIds: [...ids], latestHistoryId };
+}
+
+/**
+ * Pulls every message id out of one history entry regardless of which
+ * sub-array(s) it appears under — `messagesAdded`, `labelsAdded`, the bare
+ * `messages` array, or anything else shaped like `[{ message: { id } }]` or
+ * `[{ id }]`. Over-collecting is harmless (the caller re-checks each id's
+ * real state); under-collecting is the actual bug this replaced.
+ */
+function collectMessageIds(entry: Record<string, unknown>, ids: Set<string>): void {
+  for (const value of Object.values(entry)) {
+    if (!Array.isArray(value)) continue;
+    for (const item of value) {
+      if (item && typeof item === 'object') {
+        const rec = item as Record<string, unknown>;
+        const msg = (rec.message ?? rec) as Record<string, unknown>;
+        if (typeof msg.id === 'string') ids.add(msg.id);
+      }
+    }
+  }
 }
 
 function base64UrlEncode(input: string): string {

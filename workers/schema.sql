@@ -459,3 +459,22 @@ CREATE TABLE IF NOT EXISTS email_connections (
 -- material genuinely answered, when the prospect's wording differed from the
 -- creator's. See workers/leadgen/embeddings.ts.
 ALTER TABLE knowledge_items ADD COLUMN embedding TEXT;
+
+-- Ties an inbound email to the Gmail message that produced it, so the poller
+-- can check "have I already answered this exact message" before processing
+-- a candidate id. Needed because history.list candidates are deliberately
+-- over-collected (see workers/email/gmail.ts) — a message can legitimately
+-- resurface as a candidate on a later poll (e.g. its own read-state changing
+-- after we reply to it), and without this check that would generate a
+-- second reply to the same email.
+ALTER TABLE prospect_messages ADD COLUMN source_message_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_messages_source ON prospect_messages(creator_id, source_message_id);
+
+-- Cheap compare-and-swap lock so an automatic Cron Trigger tick and a manual
+-- /api/admin/email/poll (or two overlapping cron ticks, if a poll ever runs
+-- long) cannot both process the same connection at once. Without this, two
+-- concurrent polls each see the same "new" message before either has written
+-- a row, both pass the source_message_id dedupe check, and both send a real
+-- reply — observed live: the same inbound message answered twice, seconds
+-- apart, with two different AI-generated replies to a real person.
+ALTER TABLE email_connections ADD COLUMN locked_until INTEGER;

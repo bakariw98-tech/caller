@@ -84,7 +84,7 @@ describe('listNewInboxMessages', () => {
     vi.unstubAllGlobals();
   });
 
-  it('collects INBOX-labeled messagesAdded across pages and adopts the last page historyId as the new cursor', async () => {
+  it('collects messagesAdded ids across pages and adopts the last page historyId as the new cursor', async () => {
     const calls: string[] = [];
     vi.stubGlobal(
       'fetch',
@@ -118,14 +118,11 @@ describe('listNewInboxMessages', () => {
     expect(calls).toHaveLength(2);
   });
 
-  it('catches a message that reaches INBOX via a labelsAdded event, not a messageAdded one', async () => {
+  it('catches a message via labelsAdded, not just messagesAdded', async () => {
     // Found against a real Gmail account, not in the docs: a message that
     // lands somewhere other than INBOX first (Gmail briefly filed it as
     // spam, then reclassified it) generates a labelsAdded history entry for
-    // the move, not a second messagesAdded — filtering only on messageAdded
-    // silently drops it forever, since the cursor still advances past the
-    // event. This is the exact shape of the real history.list response that
-    // exposed the bug.
+    // the move, not a second messagesAdded.
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -134,9 +131,6 @@ describe('listNewInboxMessages', () => {
             history: [
               { messagesAdded: [{ message: { id: 'm-caught-at-delivery', labelIds: ['INBOX'] } }] },
               { labelsAdded: [{ message: { id: 'm-reclassified', labelIds: ['CATEGORY_PERSONAL', 'INBOX'] } }] },
-              // A labelsAdded event for a label that isn't INBOX (e.g. just
-              // STARRED) must not pull the message in.
-              { labelsAdded: [{ message: { id: 'm-just-starred', labelIds: ['STARRED'] } }] },
             ],
             historyId: '2000',
           }),
@@ -148,7 +142,38 @@ describe('listNewInboxMessages', () => {
     expect(result.newMessageIds.sort()).toEqual(['m-caught-at-delivery', 'm-reclassified']);
   });
 
-  it('excludes messagesAdded not labeled INBOX (e.g. mail that landed only in Sent)', async () => {
+  it('catches a message from a bare top-level `messages` array with no messagesAdded/labelsAdded at all', async () => {
+    // Found against a real live account after the labelsAdded fix still
+    // missed a message: Gmail sometimes reports a change as history.messages
+    // — no categorised sub-array, no labelIds included — with no other event
+    // for that message anywhere in the range. This is the exact shape that
+    // left a real inbound email unanswered. Any assumption about which
+    // sub-array Gmail uses is an assumption on undocumented behaviour, which
+    // is why this no longer tries to enumerate shapes — see the id
+    // collection logic and its comment.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            history: [{ id: '62665', messages: [{ id: 'm-bare-shape', threadId: 't1' }] }],
+            historyId: '62703',
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+    const result = await listNewInboxMessages('token', '62600');
+    expect(result.newMessageIds).toEqual(['m-bare-shape']);
+  });
+
+  it('over-collects rather than filters by label — INBOX membership is decided by the caller from a real message fetch', async () => {
+    // Deliberate design change: this function used to filter on labelIds
+    // embedded inside the history response, which is exactly the field that
+    // turned out to vary or be absent across shapes. A message that only
+    // ever shows up as SENT here still comes back as a candidate; the poller
+    // (workers/email/poll.ts) is what confirms current INBOX membership via
+    // getMessage(), which is the one place that state is authoritative.
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -162,10 +187,10 @@ describe('listNewInboxMessages', () => {
       ),
     );
     const result = await listNewInboxMessages('token', '900');
-    expect(result.newMessageIds).toEqual([]);
+    expect(result.newMessageIds).toEqual(['sent1']);
   });
 
-  it('dedupes a message id that appears in more than one history entry', async () => {
+  it('dedupes a message id that appears in more than one history entry or shape', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -173,7 +198,8 @@ describe('listNewInboxMessages', () => {
           JSON.stringify({
             history: [
               { messagesAdded: [{ message: { id: 'm1', labelIds: ['INBOX'] } }] },
-              { messagesAdded: [{ message: { id: 'm1', labelIds: ['INBOX'] } }] },
+              { labelsAdded: [{ message: { id: 'm1', labelIds: ['INBOX'] } }] },
+              { messages: [{ id: 'm1' }] },
             ],
             historyId: '1000',
           }),

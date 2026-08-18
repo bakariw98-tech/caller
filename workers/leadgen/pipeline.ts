@@ -33,6 +33,8 @@ export interface RunPipelineParams {
   text: string;
   /** Defaults to true. The onboarding preview passes false to try a question without writing anything. */
   persist?: boolean;
+  /** Gmail message id, when this came from email — stored so the poller can check "have I answered this before". */
+  sourceMessageId?: string | null;
 }
 
 export interface PipelineResult {
@@ -193,10 +195,10 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
 
     await db
       .prepare(
-        `INSERT INTO prospect_messages (id, prospect_id, creator_id, direction, subject, body, created_at)
-         VALUES (?, ?, ?, 'inbound', ?, ?, ?)`,
+        `INSERT INTO prospect_messages (id, prospect_id, creator_id, direction, subject, body, source_message_id, created_at)
+         VALUES (?, ?, ?, 'inbound', ?, ?, ?, ?)`,
       )
-      .run(id('msg'), prospect.id, creatorId, params.subject ?? null, question, now());
+      .run(id('msg'), prospect.id, creatorId, params.subject ?? null, question, params.sourceMessageId ?? null, now());
 
     await db
       .prepare(

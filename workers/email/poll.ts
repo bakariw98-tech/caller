@@ -1,5 +1,6 @@
 import type { Env } from '../env.js';
 import { wrapD1 } from '../db/d1-adapter.js';
+import { now } from '../../src/util/ids.js';
 import {
   getAccessToken,
   getProfile,
@@ -25,6 +26,24 @@ export interface PollSummary {
   errors: { creatorId: string; detail: string }[];
 }
 
+/** How long a claim on a connection holds, in seconds — comfortably longer than one poll should ever take. */
+const LOCK_SECONDS = 55;
+
+/**
+ * Automated-sender addresses that can never be a real prospect, by the
+ * universal "do not reply to this mailbox" convention.
+ *
+ * Added after this poller answered a mailer-daemon bounce, a Reddit
+ * notification, an Instacart promo, and an Indeed job alert as if each were
+ * a lead — real xAI cost spent on mail nobody will ever read a reply to,
+ * against a personal inbox that (like most real inboxes) has this kind of
+ * mail mixed in with real correspondence. Deliberately narrow: this catches
+ * the "structurally cannot be a person" case via the local-part convention,
+ * not an attempt at general mail classification, which is a much fuzzier
+ * problem this is not trying to solve.
+ */
+export const AUTOMATED_SENDER_PATTERN = /^(no-?reply|do-?not-?reply|mailer-daemon|postmaster)@/i;
+
 /**
  * One pass over every connected creator's inbox: whatever's new since the
  * stored cursor gets run through the pipeline and answered.
@@ -47,11 +66,34 @@ export async function pollAllConnections(env: Env): Promise<PollSummary> {
   const oauth = { clientId: env.GOOGLE_OAUTH_CLIENT_ID, clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET };
 
   for (const conn of connections) {
+    // Compare-and-swap claim, not just an application-level check: two
+    // overlapping poll runs (the Cron Trigger firing while a manual
+    // /api/admin/email/poll is still in flight, or one poll simply taking
+    // longer than the cron interval) previously both saw the same "new"
+    // message before either had written a row, both passed the
+    // source_message_id dedupe check, and both sent a reply — observed
+    // live, not hypothetical: the same inbound message answered twice,
+    // seconds apart, with two different AI-generated replies to a real
+    // person. The UPDATE below only succeeds for the caller that wins the
+    // race; `changes === 0` means someone else is already holding it.
+    const claim = await db
+      .prepare(
+        `UPDATE email_connections SET locked_until = ?
+           WHERE id = ? AND (locked_until IS NULL OR locked_until < ?)`,
+      )
+      .run(now() + LOCK_SECONDS, conn.id, now());
+    if (claim.changes === 0) continue;
+
     try {
       await pollOneConnection(env, db, conn, oauth, summary);
     } catch (err) {
       console.error(`gmail poll failed for creator ${conn.creator_id}`, err);
       summary.errors.push({ creatorId: conn.creator_id, detail: err instanceof Error ? err.message : String(err) });
+    } finally {
+      // Always release, success or failure — an uncleared lock would mean
+      // one crashed poll permanently stops this connection from ever being
+      // checked again.
+      await db.prepare('UPDATE email_connections SET locked_until = NULL WHERE id = ?').run(conn.id);
     }
   }
 
@@ -84,11 +126,29 @@ async function pollOneConnection(
   for (const gmailId of history.newMessageIds) {
     try {
       const inbound = await getMessage(accessToken, gmailId);
+      // The real "is this actually a new inbound lead" check. history.list
+      // only returns candidate ids now — see listNewInboxMessages — so this
+      // fetch is where INBOX membership is actually confirmed, and where a
+      // message that got archived, trashed, or was never in INBOX to begin
+      // with (a SENT or DRAFT event surfaced as a candidate) gets filtered out.
+      if (!inbound.labelIds.includes('INBOX')) continue;
       // Defensive: INBOX shouldn't contain the account's own sent mail, but a
       // filter/forwarding rule on the connected account could put it there,
       // and replying to ourselves is exactly the kind of loop worth guarding
       // against cheaply.
       if (inbound.from === conn.gmail_address.toLowerCase()) continue;
+      // Bounces, notifications and promos are not leads — see AUTOMATED_SENDER_PATTERN.
+      if (AUTOMATED_SENDER_PATTERN.test(inbound.from)) continue;
+
+      // Idempotency: candidates are deliberately over-collected (see
+      // listNewInboxMessages), so the same real message can legitimately
+      // surface again on a later poll — e.g. our own reply changes the
+      // thread's read state, which itself is a history event. Without this,
+      // that resurfacing would generate a second reply to the same email.
+      const already = await db
+        .prepare('SELECT 1 FROM prospect_messages WHERE creator_id = ? AND source_message_id = ? LIMIT 1')
+        .get(conn.creator_id, gmailId);
+      if (already) continue;
 
       const result = await runLeadgenPipeline({
         db,
@@ -102,6 +162,7 @@ async function pollOneConnection(
         fromEmail: inbound.from,
         fromName: inbound.fromName,
         subject: inbound.subject,
+        sourceMessageId: gmailId,
         text: inbound.text,
       });
 
