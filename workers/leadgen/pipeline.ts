@@ -5,10 +5,11 @@ import {
   generateReply,
   loadKnowledge,
   loadOffers,
-  selectKnowledge,
+  selectKnowledgeHybrid,
   scoreProspect,
   type GeneratedReply,
 } from './reply.js';
+import { embedQuery, type AiBinding } from './embeddings.js';
 
 export class CreatorNotFoundError extends Error {
   constructor(creatorId: string) {
@@ -18,6 +19,8 @@ export class CreatorNotFoundError extends Error {
 
 export interface RunPipelineParams {
   db: SqlDb;
+  /** Workers AI, for semantic retrieval. Omitted callers fall back to keyword scoring. */
+  ai?: AiBinding;
   apiBase: string;
   apiKey: string;
   model: string;
@@ -98,7 +101,18 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
 
   const allKnowledge = await loadKnowledge(db, creatorId);
   const offers = await loadOffers(db, creatorId);
-  const knowledge = selectKnowledge(allKnowledge, question);
+
+  // A failed embedding must not cost the prospect their answer — retrieval
+  // degrades to keyword scoring rather than the whole reply erroring out.
+  let queryVector: Float32Array | null = null;
+  if (params.ai) {
+    try {
+      queryVector = await embedQuery(params.ai, question);
+    } catch (err) {
+      console.error('query embedding failed, falling back to keyword retrieval', err);
+    }
+  }
+  const knowledge = selectKnowledgeHybrid(allKnowledge, question, queryVector);
 
   const terminology = [
     ...new Set(

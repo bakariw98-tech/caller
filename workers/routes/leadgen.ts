@@ -4,8 +4,9 @@ import { wrapD1 } from '../db/d1-adapter.js';
 import { id, now, hmacHex } from '../../src/util/ids.js';
 import type { Creator } from '../../src/domain/types.js';
 import { extractFreeContent, NoUsableContentError, type FreeContentSource } from '../leadgen/extract.js';
-import { loadOffers } from '../leadgen/reply.js';
 import { runLeadgenPipeline, CreatorNotFoundError } from '../leadgen/pipeline.js';
+import { embedPassages, embedQuery, embeddingTextForItem, encodeVector, decodeVector, cosineSimilarity } from '../leadgen/embeddings.js';
+import { loadOffers, loadKnowledge, keywordScores, SEMANTIC_FLOOR } from '../leadgen/reply.js';
 
 export const leadgenRoute = new Hono<{ Bindings: Env }>();
 
@@ -134,6 +135,14 @@ leadgenRoute.post('/api/creators/:id/content', async (c) => {
       stored++;
     }
 
+    // Index what was just stored. Best-effort: a failure here leaves rows
+    // findable by keyword rather than losing them, and /reindex repairs it.
+    try {
+      await indexKnowledge(c.env, db, creatorId);
+    } catch (err) {
+      console.error('embedding index failed after ingest', err);
+    }
+
     // The extracted methodology and terminology belong on the creator so both
     // products speak the same way; only filled if the creator left it blank.
     if (result.methodology && !creator.methodology) {
@@ -227,6 +236,18 @@ leadgenRoute.patch('/api/creators/:id/knowledge/:itemId', async (c) => {
 
   vals.push(itemId);
   await db.prepare(`UPDATE knowledge_items SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+
+  // problem/guidance are exactly what the vector encodes, so an edit to either
+  // invalidates it. Clear and re-index rather than leaving a vector that
+  // describes text no longer in the row.
+  if (typeof b.problem === 'string' || typeof b.guidance === 'string') {
+    await db.prepare('UPDATE knowledge_items SET embedding = NULL WHERE id = ?').run(itemId);
+    try {
+      await indexKnowledge(c.env, db, creatorId);
+    } catch (err) {
+      console.error('re-index after edit failed', err);
+    }
+  }
   return c.json({ ok: true });
 });
 
@@ -292,6 +313,103 @@ leadgenRoute.patch('/api/creators/:id/settings', async (c) => {
   return c.json({ ok: true });
 });
 
+
+/**
+ * Embeds every knowledge item for a creator that does not yet have a vector.
+ *
+ * Batched because the model accepts arrays and one round trip for twenty items
+ * beats twenty round trips. Only un-indexed rows are touched, so this is safe
+ * to call repeatedly and cheap when there is nothing to do.
+ */
+async function indexKnowledge(
+  env: Env,
+  db: ReturnType<typeof wrapD1>,
+  creatorId: string,
+  force = false,
+): Promise<number> {
+  const rows = await db
+    .prepare(
+      `SELECT id, problem, guidance FROM knowledge_items
+        WHERE creator_id = ?${force ? '' : ' AND embedding IS NULL'}`,
+    )
+    .all<{ id: string; problem: string; guidance: string }>(creatorId);
+  if (!rows.length) return 0;
+
+  const BATCH = 20;
+  let indexed = 0;
+  for (let i = 0; i < rows.length; i += BATCH) {
+    const chunk = rows.slice(i, i + BATCH);
+    const vectors = await embedPassages(
+      env.AI as unknown as Parameters<typeof embedPassages>[0],
+      chunk.map((r) => embeddingTextForItem(r.problem, r.guidance)),
+    );
+    for (let j = 0; j < chunk.length; j++) {
+      const vec = vectors[j];
+      const row = chunk[j];
+      if (!vec || !row) continue;
+      await db.prepare('UPDATE knowledge_items SET embedding = ? WHERE id = ?').run(encodeVector(vec), row.id);
+      indexed++;
+    }
+  }
+  return indexed;
+}
+
+/**
+ * Backfills embeddings. `?force=1` re-embeds everything, which is what to use
+ * after changing the embedding model — stale vectors from a different model
+ * are not comparable to fresh ones and silently degrade retrieval.
+ */
+leadgenRoute.post('/api/creators/:id/reindex', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const force = c.req.query('force') === '1';
+  try {
+    const indexed = await indexKnowledge(c.env, db, creatorId, force);
+    const remaining = await db
+      .prepare('SELECT COUNT(*) AS n FROM knowledge_items WHERE creator_id = ? AND embedding IS NULL')
+      .get<{ n: number }>(creatorId);
+    return c.json({ indexed, still_unindexed: remaining?.n ?? 0 });
+  } catch (err) {
+    console.error('reindex failed', err);
+    return c.json({ error: 'reindex failed', detail: err instanceof Error ? err.message : String(err) }, 502);
+  }
+});
+
+
+/**
+ * Every item's raw similarity to a question, sorted, ignoring the floor.
+ *
+ * The floor is the one number in retrieval that cannot be reasoned to from
+ * first principles — embedding models differ wildly in how they space
+ * unrelated text, and BGE in particular compresses everything into a narrow
+ * band. This endpoint is how it gets set from measurements on a real corpus
+ * instead of a guess, and how a creator seeing bad retrieval can find out why.
+ */
+leadgenRoute.post('/api/creators/:id/retrieval-debug', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const b = (await c.req.json().catch(() => ({}))) as { text?: string };
+  const question = String(b.text ?? '').trim();
+  if (!question) return c.json({ error: 'text is required' }, 400);
+
+  const rows = await loadKnowledge(db, creatorId);
+  const qv = await embedQuery(c.env.AI as unknown as Parameters<typeof embedQuery>[0], question);
+  const kw = keywordScores(rows, question);
+
+  const scored = rows
+    .map((r) => {
+      const v = r.embedding ? decodeVector(r.embedding) : null;
+      return {
+        problem: r.problem.slice(0, 60),
+        semantic: v ? Number(cosineSimilarity(qv, v).toFixed(4)) : null,
+        keyword: kw.get(r.id) ?? 0,
+      };
+    })
+    .sort((a, b2) => (b2.semantic ?? 0) - (a.semantic ?? 0));
+
+  return c.json({ question, floor: SEMANTIC_FLOOR, items: scored });
+});
+
 // -------------------------------------------------------------- the brain --
 
 /**
@@ -328,6 +446,7 @@ leadgenRoute.post('/api/leadgen/simulate', async (c) => {
   try {
     result = await runLeadgenPipeline({
       db,
+      ai: c.env.AI,
       apiBase: c.env.XAI_API_BASE,
       apiKey: c.env.XAI_API_KEY,
       model: c.env.XAI_TEXT_MODEL,

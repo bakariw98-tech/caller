@@ -2,6 +2,7 @@ import type { SqlDb } from '../db/types.js';
 import type { Creator } from '../../src/domain/types.js';
 import { chatCompletionJson, USD_PER_TICK } from '../xai/client.js';
 import { buildReplyInstructions, type KnowledgeForReply, type OfferForReply, type ProspectContext } from './prompt.js';
+import { cosineSimilarity, decodeVector } from './embeddings.js';
 
 export interface KnowledgeRow {
   id: string;
@@ -11,6 +12,8 @@ export interface KnowledgeRow {
   framework_terms_json: string;
   boundary: string | null;
   boundary_offer_id: string | null;
+  /** base64 Float32Array, null until the item has been indexed. */
+  embedding?: string | null;
 }
 
 export interface OfferRow {
@@ -49,22 +52,114 @@ function tokenize(text: string): string[] {
  * the situation a prospect would arrive with — so it is weighted above the
  * guidance prose, which is longer and dilutes overlap.
  */
-export function selectKnowledge(rows: KnowledgeRow[], question: string, limit = 6): KnowledgeRow[] {
+export function keywordScores(rows: KnowledgeRow[], question: string): Map<string, number> {
   const terms = new Set(tokenize(question));
-  if (terms.size === 0) return [];
+  const out = new Map<string, number>();
+  if (terms.size === 0) return out;
 
+  for (const row of rows) {
+    const problemTokens = new Set(tokenize(row.problem));
+    const bodyTokens = new Set(tokenize(`${row.guidance} ${row.who_for ?? ''} ${row.framework_terms_json}`));
+    let score = 0;
+    for (const t of terms) {
+      if (problemTokens.has(t)) score += 3;
+      else if (bodyTokens.has(t)) score += 1;
+    }
+    if (score > 0) out.set(row.id, score);
+  }
+  return out;
+}
+
+export function selectKnowledge(rows: KnowledgeRow[], question: string, limit = 6): KnowledgeRow[] {
+  const scores = keywordScores(rows, question);
   return rows
-    .map((row) => {
-      const problemTokens = new Set(tokenize(row.problem));
-      const bodyTokens = new Set(tokenize(`${row.guidance} ${row.who_for ?? ''} ${row.framework_terms_json}`));
-      let score = 0;
-      for (const t of terms) {
-        if (problemTokens.has(t)) score += 3;
-        else if (bodyTokens.has(t)) score += 1;
-      }
-      return { row, score };
-    })
-    .filter((x) => x.score > 0)
+    .filter((r) => scores.has(r.id))
+    .sort((a, b) => (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0))
+    .slice(0, limit);
+}
+
+/**
+ * Minimum cosine similarity for an item to count as relevant at all.
+ *
+ * Measured, not guessed — and the measurement overturned the first guess. On a
+ * real corpus via /retrieval-debug, BGE scored genuinely relevant questions at
+ * 0.53-0.63 and clearly off-topic ones at 0.42-0.56. Those bands nearly touch:
+ * BGE compresses everything into a narrow range, so there is no absolute
+ * threshold that cleanly separates them. An initial 0.62 looked reasonable and
+ * would have silently rejected "nobody is buying from my website even though
+ * people visit it" (top item 0.579) — reintroducing exactly the false-decline
+ * bug embeddings were added to fix.
+ *
+ * So the floor is set low, to trim obvious junk only, because the two failure
+ * directions cost very different amounts. Too high means a real question the
+ * material answers gets "I don't cover that" — the product's worst failure.
+ * Too low means the model is handed a few marginal items, and its grounding
+ * instructions make it decline anyway, which is observed behaviour rather than
+ * hope: gardening, mortgage and dog-training questions were all declined
+ * correctly even when marginal material was retrieved. The prompt is the real
+ * backstop here; this floor just keeps the obvious noise out of the context.
+ */
+export const SEMANTIC_FLOOR = 0.5;
+
+/**
+ * Keyword score needed to pull an item in despite a weak vector.
+ *
+ * 3 is one problem-field term match. Set at 1 — any single incidental body
+ * word — a gardening question matched a copywriting item and bypassed the
+ * floor entirely, which is how off-topic material reached the context.
+ */
+const KEYWORD_RESCUE_MIN = 3;
+
+/** Weight of semantic score relative to keyword score in the blend. */
+const SEMANTIC_WEIGHT = 0.75;
+const KEYWORD_WEIGHT = 0.25;
+
+/**
+ * Hybrid retrieval: semantic similarity blended with keyword overlap.
+ *
+ * Not pure semantic, deliberately. Embeddings understand paraphrase, which is
+ * the whole point of this upgrade, but they blur exact tokens — a creator's
+ * coined framework name or product name is precisely the thing a prospect
+ * might quote verbatim, and that is where literal matching wins. Each covers
+ * the other's failure.
+ *
+ * Falls back to keyword-only for any item without a stored vector, so an
+ * un-indexed corpus degrades to the old behaviour instead of returning
+ * nothing at all.
+ */
+export function selectKnowledgeHybrid(
+  rows: KnowledgeRow[],
+  question: string,
+  queryVector: Float32Array | null,
+  limit = 6,
+): KnowledgeRow[] {
+  if (!queryVector) return selectKnowledge(rows, question, limit);
+
+  const kw = keywordScores(rows, question);
+
+  // Normalise keyword scores against the best one rather than against rank
+  // position. Rank is far too coarse on a small corpus: two items with an
+  // identical keyword score would land at 1.0 and 0.5 purely from array order,
+  // and that gap is wide enough to outweigh a real semantic difference. By
+  // value, equal scores stay equal.
+  const bestKeyword = Math.max(0, ...kw.values());
+
+  const scored = rows.map((row) => {
+    const vec = row.embedding ? decodeVector(row.embedding) : null;
+    const semantic = vec ? cosineSimilarity(queryVector, vec) : 0;
+    const keyword = bestKeyword > 0 ? (kw.get(row.id) ?? 0) / bestKeyword : 0;
+    return { row, semantic, score: semantic * SEMANTIC_WEIGHT + keyword * KEYWORD_WEIGHT };
+  });
+
+  // An item clears the bar on its own semantic merit, or by being a literal
+  // keyword hit. The floor applies to the semantic signal specifically —
+  // blending first would let a strong keyword score drag an irrelevant item
+  // over the line, which is how off-topic questions start getting answered.
+  const relevant = scored.filter(
+    (x) => x.semantic >= SEMANTIC_FLOOR || (kw.get(x.row.id) ?? 0) >= KEYWORD_RESCUE_MIN,
+  );
+
+  return relevant
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map((x) => x.row);
@@ -281,7 +376,7 @@ export function scoreProspect(p: {
 export async function loadKnowledge(db: SqlDb, creatorId: string): Promise<KnowledgeRow[]> {
   return db
     .prepare(
-      `SELECT id, problem, who_for, guidance, framework_terms_json, boundary, boundary_offer_id
+      `SELECT id, problem, who_for, guidance, framework_terms_json, boundary, boundary_offer_id, embedding
          FROM knowledge_items WHERE creator_id = ?`,
     )
     .all<KnowledgeRow>(creatorId);

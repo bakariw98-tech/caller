@@ -451,3 +451,11 @@ CREATE TABLE IF NOT EXISTS email_connections (
   connected_at  INTEGER NOT NULL,
   UNIQUE(creator_id)
 );
+
+-- Semantic retrieval vector for the knowledge item, base64 Float32Array from
+-- @cf/baai/bge-base-en-v1.5 (768 dims). NULL until indexed; retrieval falls
+-- back to keyword scoring for un-indexed rows rather than skipping them.
+-- Added after keyword-only retrieval was observed missing questions the
+-- material genuinely answered, when the prospect's wording differed from the
+-- creator's. See workers/leadgen/embeddings.ts.
+ALTER TABLE knowledge_items ADD COLUMN embedding TEXT;

@@ -4,6 +4,8 @@ import type { CallSessionDO } from './durable-objects/call-session.js';
 export interface Env {
   DB: D1Database;
   CALL_SESSION: DurableObjectNamespace<CallSessionDO>;
+  /** Workers AI — embeddings for semantic retrieval, see leadgen/embeddings.ts. */
+  AI: Ai;
 
   XAI_API_KEY: string;
   XAI_API_BASE: string;

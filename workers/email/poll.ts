@@ -92,6 +92,7 @@ async function pollOneConnection(
 
       const result = await runLeadgenPipeline({
         db,
+        ai: env.AI,
         apiBase: env.XAI_API_BASE,
         apiKey: env.XAI_API_KEY,
         model: env.XAI_TEXT_MODEL,

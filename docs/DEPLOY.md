@@ -202,6 +202,43 @@ then call the endpoint above. It returns a summary
 (`connectionsChecked`/`messagesProcessed`/`errors`), and the reply lands back
 in the sender's inbox, threaded under the original message.
 
+## Retrieval — semantic, with a measured floor
+
+Which knowledge the coach sees for a given question is decided by hybrid
+retrieval: cosine similarity over `@cf/baai/bge-base-en-v1.5` embeddings
+(Workers AI, `[ai]` binding, 768 dims) blended with the original keyword
+scorer. Vectors live in `knowledge_items.embedding` as base64 Float32 and are
+compared in JS — one creator's corpus is small enough that brute force beats
+standing up Vectorize.
+
+Keyword-only retrieval missed questions the material genuinely answered
+whenever a prospect's wording differed from the creator's ("pricing" against
+an item titled "what should I charge"). Cold prospects always arrive in their
+own vocabulary, so that was the common case.
+
+Indexing happens automatically on ingest and after an edit. To backfill or
+repair:
+
+```bash
+curl -X POST "$BASE/api/creators/<id>/reindex" -H "Authorization: Bearer $TOKEN"
+# ?force=1 re-embeds everything — required after changing the embedding model,
+# since vectors from different models are not comparable.
+```
+
+To see why a question retrieved what it did, including raw scores:
+
+```bash
+curl -X POST "$BASE/api/creators/<id>/retrieval-debug" -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"text":"the question"}'
+```
+
+**On `SEMANTIC_FLOOR`:** it is deliberately low (0.5) and that is measured, not
+guessed. On a real corpus BGE scored relevant questions 0.53-0.63 and
+off-topic ones 0.42-0.56 — bands that nearly touch. A higher floor rejects
+real questions; the model's grounding instructions are what actually decline
+off-topic ones, verified against gardening, mortgage and dog-training
+questions. Re-measure with `/retrieval-debug` before changing it.
+
 ## What isn't ported yet
 
 The call path — webhook, Durable Object, MCP tools, billing, structure audit,

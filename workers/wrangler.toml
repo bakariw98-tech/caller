@@ -8,6 +8,10 @@ binding = "DB"
 database_name = "caller-coach"
 database_id = "36a74a8c-1399-4c55-8a1b-cb07b1f1d9a5"
 
+# Embeddings for semantic retrieval — see workers/leadgen/embeddings.ts.
+[ai]
+binding = "AI"
+
 [[durable_objects.bindings]]
 name = "CALL_SESSION"
 class_name = "CallSessionDO"
