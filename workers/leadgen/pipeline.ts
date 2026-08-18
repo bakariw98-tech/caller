@@ -11,7 +11,7 @@ import {
 } from './reply.js';
 import { embedQuery, type AiBinding } from './embeddings.js';
 import { stripQuotedReply } from '../email/gmail.js';
-import { looksLikeOptOut } from './prompt.js';
+import { looksLikeOptOut, isQualified } from './prompt.js';
 
 export class CreatorNotFoundError extends Error {
   constructor(creatorId: string) {
@@ -201,13 +201,29 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
     // the prospects list: this person is worth their attention.
     const hitBoundary = prospect.hit_boundary || s.hit_boundary || s.qualifies_for_offer ? 1 : 0;
 
+    const mergedSituation = s.situation ?? prospect.situation;
+    const mergedDiagnosedProblem = s.diagnosed_problem ?? prospect.diagnosed_problem;
+    const mergedGoal = s.goal ?? prospect.goal;
+
     const score = scoreProspect({
       exchanges,
       hit_boundary: hitBoundary,
       clicked_offer: prospect.clicked_offer,
-      situation: s.situation ?? prospect.situation,
+      situation: mergedSituation,
       blocked_on: s.blocked_on ?? prospect.blocked_on,
-      goal: s.goal ?? prospect.goal,
+      goal: mergedGoal,
+    });
+
+    // The same rule the AI itself uses to decide a recommendation is
+    // earned (isQualified() in prompt.ts) — see that function's comment
+    // for why this must not be a separately-maintained definition. Passed
+    // as NULL when not (yet) met, so COALESCE below leaves an existing
+    // qualified_at alone and leaves an unqualified one NULL — this can
+    // only ever be set once, never cleared or overwritten.
+    const qualifiedNow = isQualified({
+      situation: mergedSituation,
+      diagnosed_problem: mergedDiagnosedProblem,
+      goal: mergedGoal,
     });
 
     await db
@@ -219,7 +235,7 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
                 requested_offer = MAX(requested_offer, ?), offer_pitched = MAX(offer_pitched, ?),
                 objections_json = ?, topics_json = ?,
                 exchanges = ?, hit_boundary = ?, score = ?, last_seen_at = ?, name = COALESCE(name, ?),
-                last_asked_about = ?, asked_dimensions_json = ?
+                last_asked_about = ?, asked_dimensions_json = ?, qualified_at = COALESCE(qualified_at, ?)
           WHERE id = ?`,
       )
       .run(
@@ -248,6 +264,7 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
         // legitimate question on a later turn.
         nullIfBlank(s.asked_about),
         JSON.stringify(askedDimensions),
+        qualifiedNow ? now() : null,
         prospect.id,
       );
 

@@ -176,9 +176,12 @@ const PAGE = /* html */ `<!doctype html>
   </section>
 
   <section>
-    <h2>People who wrote in</h2>
-    <p class="note">Ranked by how close they look to buying — depth of conversation, whether they hit a boundary, whether they clicked.</p>
-    <div id="prospects"></div>
+    <h2>Leads</h2>
+    <p class="note">Every address that has emailed in is a lead the moment it arrives. The conversation enriches it from there —
+      situation, real problem, goal, what's in the way — until there's enough to judge an offer honestly. That's "qualified".</p>
+    <div class="stats" id="lead-funnel"></div>
+    <div class="row" style="margin-top:.8rem"><a id="btn-export-csv" class="ghost" style="text-decoration:none;font-weight:600;padding:.55rem 1rem;border-radius:8px;border:1px solid #1a1a1c;color:#1a1a1c" href="#">Export CSV</a></div>
+    <div id="prospects" style="margin-top:1rem"></div>
   </section>
 
   <section>
@@ -198,6 +201,8 @@ const PAGE = /* html */ `<!doctype html>
   var CID = parts[parts.length - 1];
   var KEY = new URLSearchParams(location.search).get('key');
   var BASE = location.origin;
+
+  el('btn-export-csv').href = BASE + '/api/creators/' + CID + '/prospects.csv?key=' + encodeURIComponent(KEY);
 
   function api(path, opts) {
     opts = opts || {};
@@ -226,6 +231,11 @@ const PAGE = /* html */ `<!doctype html>
       el('c-boundaries').textContent = d.counts.boundaries;
       el('c-offers').textContent = d.counts.offers;
       el('c-prospects').textContent = d.counts.prospects;
+      el('lead-funnel').innerHTML =
+        '<div class="stat"><b>' + d.counts.leads + '</b><span>leads captured</span></div>' +
+        '<div class="stat"><b>' + d.counts.qualified + '</b><span>qualified</span></div>' +
+        '<div class="stat"><b>' + d.counts.offers_presented + '</b><span>offers presented</span></div>' +
+        '<div class="stat"><b>' + d.counts.offer_clicks + '</b><span>offer clicks</span></div>';
       el('email-line').innerHTML = d.email
         ? '<span class="pill on">Live</span> Answering mail sent to <b>' + esc(d.email.gmail_address) + '</b>, checked every minute.'
         : '<span class="pill off">Not connected</span> No inbox connected yet, so nothing is being answered.';
@@ -455,15 +465,57 @@ const PAGE = /* html */ `<!doctype html>
   };
 
   // ---- prospects
+  function parseList(json) {
+    try {
+      var v = JSON.parse(json || '[]');
+      return Array.isArray(v) ? v.filter(function (x) { return typeof x === 'string'; }) : [];
+    } catch (e) { return []; }
+  }
+  function field(label, value) {
+    return value ? '<p><b>' + esc(label) + ':</b> ' + esc(value) + '</p>' : '';
+  }
+  function fieldDate(label, epochSeconds) {
+    return epochSeconds ? field(label, new Date(epochSeconds * 1000).toLocaleDateString()) : '';
+  }
+
   function loadProspects() {
     return api('/api/creators/' + CID + '/prospects').then(function (d) {
       var box = el('prospects');
       if (!d.prospects.length) { box.innerHTML = '<p class="note">Nobody yet.</p>'; return; }
-      var rows = d.prospects.map(function (p) {
-        return '<tr><td>' + esc(p.email) + '</td><td>' + esc(p.blocked_on || p.situation || '—') +
-          '</td><td>' + p.exchanges + '</td><td>' + (p.clicked_offer ? 'yes' : '') + '</td><td><b>' + p.score + '</b></td></tr>';
-      }).join('');
-      box.innerHTML = '<table><tr><th>Email</th><th>Stuck on</th><th>Emails</th><th>Clicked</th><th>Score</th></tr>' + rows + '</table>';
+      box.innerHTML = '';
+      d.prospects.forEach(function (p) {
+        var n = document.createElement('div');
+        n.className = 'item';
+        var objections = parseList(p.objections_json).join(', ');
+        var topics = parseList(p.topics_json).join(', ');
+        n.innerHTML =
+          '<h3>' + esc(p.email) +
+            (p.qualified_at ? ' <span class="pill on">qualified</span>' : '') +
+            (p.clicked_offer ? ' <span class="pill on">clicked</span>' : '') + '</h3>' +
+          '<p>' + esc(p.blocked_on || p.situation || 'No situation captured yet') +
+            ' · ' + p.exchanges + ' email' + (p.exchanges === 1 ? '' : 's') + ' · score <b>' + p.score + '</b></p>' +
+          '<div class="row" style="margin-top:.5rem"><button class="danger p-toggle" type="button">Full record</button></div>' +
+          '<div class="p-detail" style="display:none;margin-top:.6rem">' +
+            field('Situation', p.situation) +
+            field('Real problem', p.diagnosed_problem) +
+            field('Goal', p.goal) +
+            field('Tried', p.tried) +
+            field('Blocked on', p.blocked_on) +
+            field('Experience level', p.knowledge_level) +
+            field('Urgency', p.urgency) +
+            field('Objections', objections) +
+            field('Topics asked about', topics) +
+            field('Offer presented', p.offer_pitched ? 'Yes' : 'No') +
+            field('Offer clicked', p.clicked_offer ? 'Yes' : 'No') +
+            fieldDate('First seen', p.first_seen_at) +
+            fieldDate('Qualified since', p.qualified_at) +
+          '</div>';
+        n.querySelector('.p-toggle').onclick = function () {
+          var detail = n.querySelector('.p-detail');
+          detail.style.display = detail.style.display === 'none' ? 'block' : 'none';
+        };
+        box.appendChild(n);
+      });
     });
   }
 

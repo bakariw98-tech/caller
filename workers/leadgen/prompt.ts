@@ -120,6 +120,28 @@ export interface DiscoveryState {
  * Pure and exported so the stage/gap logic is testable on its own rather than
  * buried inside a template string.
  */
+
+/**
+ * Whether enough is known about a prospect to judge an offer honestly —
+ * where they are, what is really wrong, and where they want to get to.
+ * Below this bar a recommendation is a guess dressed as advice.
+ *
+ * Exported as its own predicate, not left inline in buildDiscoveryState(),
+ * because it is also the definition of a "qualified lead" for the lead
+ * database — the count on the dashboard and the AI's own decision about
+ * when a recommendation is earned have to be the same rule, or the funnel
+ * number quietly stops meaning what it claims to mean. See
+ * prospects.qualified_at and its write site in pipeline.ts.
+ */
+export function isQualified(p: {
+  situation: string | null | undefined;
+  diagnosed_problem: string | null | undefined;
+  goal: string | null | undefined;
+}): boolean {
+  const filled = (v: string | null | undefined) => Boolean(v?.trim());
+  return filled(p.situation) && filled(p.diagnosed_problem) && filled(p.goal);
+}
+
 export function buildDiscoveryState(p: ProspectContext): DiscoveryState {
   const value: Record<DiscoveryDimension, string | null> = {
     situation: p.situation,
@@ -156,7 +178,11 @@ export function buildDiscoveryState(p: ProspectContext): DiscoveryState {
 
   // Only at 'outcome' is there enough to name the gap honestly and recommend:
   // where they are, what is really wrong, and where they want to get to.
-  const canAssessFit = has('situation') && has('diagnosed_problem') && has('goal');
+  const canAssessFit = isQualified({
+    situation: value.situation,
+    diagnosed_problem: value.diagnosed_problem,
+    goal: value.goal,
+  });
 
   const lines = [
     'WHAT YOU KNEW ABOUT THEM BEFORE OPENING THIS EMAIL — and what you did not.',

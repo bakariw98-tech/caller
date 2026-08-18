@@ -614,3 +614,14 @@ ALTER TABLE knowledge_items ADD COLUMN conflicts_with TEXT REFERENCES knowledge_
 -- afterwards. Added after the first live channel run had no way to answer
 -- "what did that actually cost" beyond re-reading Worker logs.
 ALTER TABLE channel_videos ADD COLUMN cost_usd_micros INTEGER NOT NULL DEFAULT 0;
+
+-- When this prospect first had enough known about them to judge an offer
+-- honestly -- the same rule isQualified() (workers/leadgen/prompt.ts) uses
+-- to decide a recommendation is earned, not a separate metric that could
+-- drift from what the AI itself considers "enough". Write-once: the pipeline
+-- sets this via COALESCE(qualified_at, ?), so a later message cannot reset
+-- it once reached. A timestamp rather than a boolean because the lead
+-- database is inherently per-period ("qualified leads this month"), and this
+-- plus first_seen_at answers that with no extra data -- same convention as
+-- first_seen_at/last_seen_at already on this table.
+ALTER TABLE prospects ADD COLUMN qualified_at INTEGER;

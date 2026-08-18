@@ -8,6 +8,7 @@ import { runLeadgenPipeline, CreatorNotFoundError } from '../leadgen/pipeline.js
 import { embedPassages, embedQuery, embeddingTextForItem, encodeVector, decodeVector, cosineSimilarity } from '../leadgen/embeddings.js';
 import { loadOffers, loadKnowledge, keywordScores, SEMANTIC_FLOOR } from '../leadgen/reply.js';
 import { syncChannel } from '../youtube/ingest.js';
+import { toCsv } from '../leadgen/csv.js';
 
 export const leadgenRoute = new Hono<{ Bindings: Env }>();
 
@@ -371,15 +372,45 @@ leadgenRoute.get('/api/creators/:id/overview', async (c) => {
   const conn = await db
     .prepare('SELECT gmail_address, connected_at FROM email_connections WHERE creator_id = ?')
     .get<{ gmail_address: string; connected_at: number }>(creatorId);
+  // The funnel counts are all PEOPLE, not events, and all scoped to the
+  // same PAID meaning of "presented" that offer_pitched already uses
+  // (offer_pitched: pipeline.ts — a free resource is not a pitch, on
+  // purpose). offer_clicks has to match that scope too, or the funnel can
+  // go backwards: a prospect who only ever clicked a free video's link
+  // would count as "clicked" with no "presented" above them, which is not
+  // a funnel narrowing at all — observed live on the real Bakari creator
+  // (1 click, 0 presented) before this join existed. offer_clicks is
+  // therefore counted via a join to offers.is_free = 0, not off
+  // prospects.clicked_offer directly, which does not distinguish free
+  // from paid. offer_clicks (the table) stays the full, unscoped
+  // event-level detail for attribution.
   const counts = await db
     .prepare(
       `SELECT
          (SELECT COUNT(*) FROM knowledge_items WHERE creator_id = ?) AS knowledge,
          (SELECT COUNT(*) FROM knowledge_items WHERE creator_id = ? AND boundary IS NOT NULL) AS boundaries,
          (SELECT COUNT(*) FROM offers WHERE creator_id = ? AND active = 1) AS offers,
-         (SELECT COUNT(*) FROM prospects WHERE creator_id = ?) AS prospects`,
+         (SELECT COUNT(*) FROM prospects WHERE creator_id = ?) AS prospects,
+         (SELECT COUNT(*) FROM prospects WHERE creator_id = ?) AS leads,
+         (SELECT COUNT(*) FROM prospects WHERE creator_id = ? AND qualified_at IS NOT NULL) AS qualified,
+         (SELECT COUNT(*) FROM prospects WHERE creator_id = ? AND offer_pitched = 1) AS offers_presented,
+         (SELECT COUNT(DISTINCT oc.prospect_id) FROM offer_clicks oc
+            JOIN offers o ON o.id = oc.offer_id
+           WHERE oc.creator_id = ? AND o.is_free = 0) AS offer_clicks,
+         (SELECT COUNT(*) FROM prospects WHERE creator_id = ? AND first_seen_at >= ?) AS leads_last_30d`,
     )
-    .get<Record<string, number>>(creatorId, creatorId, creatorId, creatorId);
+    .get<Record<string, number>>(
+      creatorId,
+      creatorId,
+      creatorId,
+      creatorId,
+      creatorId,
+      creatorId,
+      creatorId,
+      creatorId,
+      creatorId,
+      now() - 30 * 86400,
+    );
 
   return c.json({ creator, email: conn ?? null, counts });
 });
@@ -563,14 +594,106 @@ leadgenRoute.post('/api/leadgen/simulate', async (c) => {
   });
 });
 
+/**
+ * The full lead record — every field the conversation has enriched, not
+ * just what fits in a table row. This is the product's actual output: a
+ * cold email address turned into a sales-ready context package (situation,
+ * real problem, goal, what they tried, what's in the way, how much they
+ * know, urgency, objections) rather than a chat transcript the creator has
+ * to re-read to extract the same thing.
+ */
 leadgenRoute.get('/api/creators/:id/prospects', async (c) => {
   const db = wrapD1(c.env.DB);
   const rows = await db
     .prepare(
-      `SELECT id, email, name, situation, blocked_on, exchanges, hit_boundary, clicked_offer, score, last_seen_at
+      `SELECT id, email, name, situation, diagnosed_problem, goal, tried, blocked_on,
+              knowledge_level, urgency, objections_json, topics_json,
+              exchanges, hit_boundary, requested_offer, offer_pitched, clicked_offer,
+              score, first_seen_at, last_seen_at, qualified_at
          FROM prospects WHERE creator_id = ? ORDER BY score DESC, last_seen_at DESC`,
     )
     .all(c.req.param('id'));
   return c.json({ count: rows.length, prospects: rows });
+});
+
+/**
+ * The same lead record as GET /prospects, as a file. See csv.ts for why the
+ * escaping matters here specifically — every field below is free text
+ * written by a cold prospect, not app-generated data.
+ */
+leadgenRoute.get('/api/creators/:id/prospects.csv', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const rows = await db
+    .prepare(
+      `SELECT email, name, situation, diagnosed_problem, goal, tried, blocked_on,
+              knowledge_level, urgency, objections_json, topics_json,
+              exchanges, hit_boundary, requested_offer, offer_pitched, clicked_offer,
+              score, first_seen_at, last_seen_at, qualified_at
+         FROM prospects WHERE creator_id = ? ORDER BY score DESC, last_seen_at DESC`,
+    )
+    .all<Record<string, unknown>>(c.req.param('id'));
+
+  const isoOrEmpty = (epochSeconds: unknown) =>
+    typeof epochSeconds === 'number' ? new Date(epochSeconds * 1000).toISOString() : '';
+  const yesNo = (v: unknown) => (v ? 'Yes' : 'No');
+  const joinList = (json: unknown) => {
+    if (typeof json !== 'string') return '';
+    try {
+      const parsed = JSON.parse(json);
+      return Array.isArray(parsed) ? parsed.filter((x) => typeof x === 'string').join('; ') : '';
+    } catch {
+      return '';
+    }
+  };
+
+  const flat = rows.map((r) => ({
+    email: r.email,
+    name: r.name ?? '',
+    situation: r.situation ?? '',
+    real_problem: r.diagnosed_problem ?? '',
+    goal: r.goal ?? '',
+    tried: r.tried ?? '',
+    blocked_on: r.blocked_on ?? '',
+    experience_level: r.knowledge_level ?? '',
+    urgency: r.urgency ?? '',
+    objections: joinList(r.objections_json),
+    topics: joinList(r.topics_json),
+    emails_exchanged: r.exchanges,
+    hit_content_boundary: yesNo(r.hit_boundary),
+    requested_offer: yesNo(r.requested_offer),
+    offer_presented: yesNo(r.offer_pitched),
+    offer_clicked: yesNo(r.clicked_offer),
+    score: r.score,
+    first_seen_at: isoOrEmpty(r.first_seen_at),
+    last_seen_at: isoOrEmpty(r.last_seen_at),
+    qualified_at: isoOrEmpty(r.qualified_at),
+  }));
+
+  const csv = toCsv(flat, [
+    { key: 'email', header: 'Email' },
+    { key: 'name', header: 'Name' },
+    { key: 'situation', header: 'Situation' },
+    { key: 'real_problem', header: 'Real problem' },
+    { key: 'goal', header: 'Goal' },
+    { key: 'tried', header: 'Tried' },
+    { key: 'blocked_on', header: 'Blocked on' },
+    { key: 'experience_level', header: 'Experience level' },
+    { key: 'urgency', header: 'Urgency' },
+    { key: 'objections', header: 'Objections' },
+    { key: 'topics', header: 'Topics asked about' },
+    { key: 'emails_exchanged', header: 'Emails exchanged' },
+    { key: 'hit_content_boundary', header: 'Hit content boundary' },
+    { key: 'requested_offer', header: 'Requested offer' },
+    { key: 'offer_presented', header: 'Offer presented' },
+    { key: 'offer_clicked', header: 'Offer clicked' },
+    { key: 'score', header: 'Score' },
+    { key: 'first_seen_at', header: 'First seen' },
+    { key: 'last_seen_at', header: 'Last seen' },
+    { key: 'qualified_at', header: 'Qualified since' },
+  ]);
+
+  c.header('Content-Type', 'text/csv; charset=utf-8');
+  c.header('Content-Disposition', `attachment; filename="leads-${c.req.param('id')}.csv"`);
+  return c.body(csv);
 });
 

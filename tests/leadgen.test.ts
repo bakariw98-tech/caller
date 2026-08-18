@@ -6,7 +6,7 @@ import {
   normalizeVideoReference,
   type KnowledgeRow,
 } from '../workers/leadgen/reply.js';
-import { buildDiscoveryState, looksLikeOptOut, type ProspectContext } from '../workers/leadgen/prompt.js';
+import { buildDiscoveryState, looksLikeOptOut, isQualified, type ProspectContext } from '../workers/leadgen/prompt.js';
 
 function item(overrides: Partial<KnowledgeRow> & { id: string; problem: string }): KnowledgeRow {
   return {
@@ -356,5 +356,49 @@ describe('buildDiscoveryState — never re-asking', () => {
   it('still allows a question when some gaps remain unasked', () => {
     const d = buildDiscoveryState(ctx({ askedDimensions: ['situation'] }));
     expect(d.text).not.toContain('no unasked gaps left');
+  });
+});
+
+describe('isQualified', () => {
+  it('is true only when situation, real problem, and goal are all known', () => {
+    expect(
+      isQualified({
+        situation: '3 months in, doing $2k/month',
+        diagnosed_problem: 'Cannot consistently find winning products',
+        goal: 'Reach $10k/month',
+      }),
+    ).toBe(true);
+  });
+
+  it('is false when the diagnosed problem is missing, even with situation and goal known', () => {
+    // diagnosed_problem specifically — not blocked_on — because that is the
+    // AI's own read of the real bottleneck, not merely what they reported.
+    expect(
+      isQualified({
+        situation: '3 months in, doing $2k/month',
+        diagnosed_problem: null,
+        goal: 'Reach $10k/month',
+      }),
+    ).toBe(false);
+  });
+
+  it('is false when the goal is missing', () => {
+    expect(
+      isQualified({ situation: 'Doing $2k/month', diagnosed_problem: 'Product research is the bottleneck', goal: null }),
+    ).toBe(false);
+  });
+
+  it('is false when the situation is missing', () => {
+    expect(
+      isQualified({ situation: null, diagnosed_problem: 'Product research is the bottleneck', goal: 'Reach $10k/month' }),
+    ).toBe(false);
+  });
+
+  it('treats whitespace-only text as missing, not filled', () => {
+    expect(isQualified({ situation: '   ', diagnosed_problem: 'Real problem', goal: 'A goal' })).toBe(false);
+  });
+
+  it('is false when everything is missing', () => {
+    expect(isQualified({ situation: null, diagnosed_problem: null, goal: null })).toBe(false);
   });
 });
