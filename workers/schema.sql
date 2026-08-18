@@ -488,3 +488,10 @@ ALTER TABLE email_connections ADD COLUMN locked_until INTEGER;
 -- like an intake form.
 ALTER TABLE prospects ADD COLUMN goal TEXT;
 ALTER TABLE prospects ADD COLUMN last_asked_about TEXT;
+
+-- Every dimension ever asked about, not just the most recent one.
+-- last_asked_about only remembered the previous turn, so across a longer
+-- thread the same question came back repeatedly — observed live: the identical
+-- question asked in five consecutive replies, including once immediately after
+-- the prospect had answered it.
+ALTER TABLE prospects ADD COLUMN asked_dimensions_json TEXT NOT NULL DEFAULT '[]';

@@ -27,8 +27,31 @@ export interface ProspectContext {
   blocked_on: string | null;
   objections: string[];
   priorExchanges: number;
-  /** Which dimension the previous reply asked about, so an unanswered question is never repeated. */
+  /** Which dimension the previous reply asked about. */
   askedAbout: string | null;
+  /** EVERY dimension ever asked about. `askedAbout` alone only guarded one turn back. */
+  askedDimensions: string[];
+  /** True when their message is a short acknowledgement rather than a real question. */
+  isAcknowledgement: boolean;
+}
+
+/**
+ * Whether an inbound message is a pleasantry rather than a real question.
+ *
+ * "Thanks for the tip!" and "Interesting." were each answered with a full
+ * paragraph of methodology plus a repeated question. Replying to an
+ * acknowledgement with a lecture is one of the clearest tells that nobody is
+ * really on the other end, so the reply needs to know the difference.
+ *
+ * Length plus the absence of a question mark is the whole heuristic — anything
+ * cleverer risks misreading a genuinely short question ("how much?"), and the
+ * cost of a false negative here is just a normal reply.
+ */
+export function isAcknowledgementMessage(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 60) return false;
+  if (t.includes('?')) return false;
+  return /\b(thanks|thank you|thx|ok|okay|got it|cool|nice|great|interesting|appreciate|will do|sounds good|makes sense|noted)\b/i.test(t);
 }
 
 /** The discovery dimensions, in the order they are shown to the model. */
@@ -84,7 +107,8 @@ export function buildDiscoveryState(p: ProspectContext): DiscoveryState {
   // have?" before any offer has been mentioned is asking someone to object to
   // something that does not exist yet — observed live, and it is exactly the
   // checklist-completion behaviour that makes a conversation feel like a form.
-  const askable = missing.filter((d) => d !== 'objections');
+  const alreadyAsked = new Set(p.askedDimensions);
+  const askable = missing.filter((d) => d !== 'objections' && !alreadyAsked.has(d));
   const canAssessFit = Boolean(value.situation?.trim()) && Boolean(value.goal?.trim() || value.blocked_on?.trim());
 
   const stage: DiscoveryState['stage'] = canAssessFit
@@ -132,10 +156,22 @@ export function buildDiscoveryState(p: ProspectContext): DiscoveryState {
   ];
 
   if (p.priorExchanges > 0) lines.push('', `  This is exchange number ${p.priorExchanges + 1} with this person.`);
-  if (p.askedAbout) {
+  if (p.askedDimensions.length) {
     lines.push(
-      `  Your last reply already asked about "${p.askedAbout}". If they did not answer it, let it go —`,
-      '  asking twice is what makes this feel like a form. Move to a different gap.',
+      '',
+      `  ALREADY ASKED, NEVER ASK AGAIN: ${p.askedDimensions.join(', ')}.`,
+      '  You have put these to them before. Whether they answered or ignored them, they are spent.',
+      '  Re-asking a question someone has already seen is the single most obviously robotic thing you',
+      '  can do, and it has happened in this product — the same question five replies running, once',
+      '  immediately after they answered it. If every gap is spent, ask NOTHING. A short human reply',
+      '  with no question is always better than a repeat.',
+    );
+  }
+  if (!askable.length) {
+    lines.push(
+      '',
+      '  There are no unasked gaps left. Do not ask anything this email. Just be useful, or if you can',
+      '  assess fit, recommend.',
     );
   }
 
@@ -195,8 +231,15 @@ export function buildReplyInstructions(params: {
       'usable value from you and buy nothing at all. That experience is the sales pitch — not any sentence',
       'you write about the offer.',
       '',
-      'If the material below answers their question, ANSWER IT. Fully. Do not hold part of it back to',
-      'create a reason to pitch. Withholding is the single fastest way to lose them, and they can tell.',
+      'If the material below answers their question, ANSWER IT. Do not hold back the part that actually',
+      'helps in order to create a reason to pitch. Withholding is the fastest way to lose them, and they',
+      'can tell.',
+      '',
+      '"Answer it" means do not WITHHOLD — it does not mean write everything you know. Those are different',
+      'things and confusing them produces a lecture. Fully answering "why is my content not converting?"',
+      'is the one real reason plus the first thing to do about it, in a few sentences. It is not the entire',
+      'framework recited end to end. A short answer that solves their problem is a complete answer; a long',
+      'one that buries it is not, however much of the material it contains.',
     ].join('\n'),
   );
 
@@ -329,16 +372,63 @@ export function buildReplyInstructions(params: {
     ].join('\n'),
   );
 
+  if (prospect.isAcknowledgement) {
+    s.push(
+      [
+        'THEIR MESSAGE IS AN ACKNOWLEDGEMENT, NOT A QUESTION.',
+        'They said thanks, or that something was interesting. That is a person being polite at the end of',
+        'a useful exchange — not a request for more teaching.',
+        '',
+        'Reply in ONE OR TWO SHORT SENTENCES. Warm, human, done. Do not re-explain anything. Do not',
+        'summarise what you already told them. Do not ask another question unless there is a genuinely',
+        'unasked gap AND it flows naturally — usually there is not, and saying nothing is right.',
+        'If an offer genuinely fits and you have never mentioned it, this is a reasonable moment for one',
+        'light line about it. Otherwise just be gracious and stop.',
+      ].join('\n'),
+    );
+  }
+
   s.push(
     [
-      'HOW TO WRITE IT',
-      'This is an email, not an essay. Answer the question, give them something they can act on today, and',
-      'stop — plus, where it applies, the one question above. A wall of text reads as automated and gets',
-      'skimmed.',
-      'Three short paragraphs is plenty. Often one is better.',
+      'NEVER REPEAT YOURSELF. Read what you already sent them, shown below the current message.',
+      '',
+      'Advice you have already given is SPENT. Do not restate it, do not rephrase it, do not summarise it',
+      'back at them. If they write again after you have explained something, they want the NEXT thing —',
+      'a deeper cut, a concrete example, the step after the one you gave — not the same paragraph reworded.',
+      '',
+      'This has gone badly wrong in this product: near-identical replies sent several exchanges running,',
+      'twice completely word-for-word. If you find yourself about to write something you already wrote,',
+      'stop and either go one level more specific, or say something genuinely short instead.',
+      '',
+      'If they have gone quiet or vague and you have nothing new to add, it is entirely fine to write two',
+      'friendly sentences and stop. Silence beats a rerun.',
+    ].join('\n'),
+  );
+
+  s.push(
+    [
+      'HOW TO WRITE IT — like a person emailing a person.',
+      '',
+      'KEEP IT SHORT. Under 150 words. This is a hard ceiling, not a target, and it is the rule most often',
+      'broken here — real replies have gone out at three times this, reciting a numbered framework end to',
+      'end at someone who asked a one-line question. Nobody reads that from a stranger.',
+      'Give the ONE thing that matters most and the first concrete step. Never more than three steps. If a',
+      'method has seventeen parts, name the two that fix their specific problem and leave the rest.',
+      'There is always a next email — you do not have to teach everything in this one.',
+      '',
+      'MATCH THEIR ENERGY. Look at how much they actually wrote and reply in proportion:',
+      '  - A real question with detail → a real answer, two or three short paragraphs.',
+      '  - A short question → a short answer. Three or four sentences.',
+      '  - "Thanks!" / "Interesting." / "Got it" → ONE warm line. Maybe two. They are acknowledging you,',
+      '    not asking for another lesson. Answering a pleasantry with a paragraph of methodology is',
+      '    absurd, and it has happened in this product repeatedly.',
+      '',
+      'Open like a human. A brief "Hey" or their name, or just start naturally mid-thought the way people',
+      'actually write. Never open by restating their question, never "Great question".',
+      '',
+      'Sound like a person who knows this well and is being generous with it — not a manual. Concrete over',
+      'abstract. Plain words. Short sentences. If a line could appear in a brochure, rewrite it.',
       'No headers, no bullet-point dumps, no markdown formatting, no emoji.',
-      'Do not restate their question back to them. Do not open with "Great question".',
-      `Use ${creator.business_name}'s own terms and named frameworks exactly as they say them.`,
       creator.teaching_style ? `Their register: ${creator.teaching_style}` : '',
       'Write the body only — no subject line, no signature block. Those are added around you.',
     ]
@@ -347,7 +437,26 @@ export function buildReplyInstructions(params: {
   );
 
   if (params.terminology.length) {
-    s.push(`THEIR TERMS — use these exactly, never paraphrased:\n${params.terminology.map((t) => `- ${t}`).join('\n')}`);
+    s.push(
+      [
+        `${creator.business_name} uses these coined terms. When you use one, KEEP the wording exactly —`,
+        'but you are writing to someone who has never heard any of them, so introduce it in plain',
+        'language the first time and then use the term. "Go read the reviews and comments where your',
+        'customers already complain — I call that forum foraging" lands; "do forum foraging and build a',
+        'halo strategy document with under the fingernail copy" is impenetrable jargon soup.',
+        '',
+        'AT MOST ONE of these per email, and only if it genuinely helps. Stacking them is the fastest way',
+        'to sound like a bot reciting a glossary — that has actually happened here, six terms in one',
+        'paragraph to a stranger.',
+        '',
+        'TRANSLATE THE MATERIAL, DO NOT TRANSCRIBE IT. The material below is written in-house, for people',
+        'already fluent in it. Your reader is not. Take the substance and say it in ordinary words, the way',
+        `${creator.business_name} would explain it out loud to someone they just met. Grounding means never`,
+        'inventing claims — it does not mean copying phrasing. A reply that reads like an internal glossary',
+        'is a failure even when every word came from the material.',
+        params.terminology.map((t) => `- ${t}`).join('\n'),
+      ].join('\n'),
+    );
   }
   if (always.length) s.push(`ALWAYS:\n${always.map((a) => `- ${a}`).join('\n')}`);
   if (never.length) s.push(`NEVER:\n${never.map((n) => `- ${n}`).join('\n')}`);

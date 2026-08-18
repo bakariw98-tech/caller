@@ -11,6 +11,7 @@ import {
 } from './reply.js';
 import { embedQuery, type AiBinding } from './embeddings.js';
 import { stripQuotedReply } from '../email/gmail.js';
+import { isAcknowledgementMessage } from './prompt.js';
 
 export class CreatorNotFoundError extends Error {
   constructor(creatorId: string) {
@@ -166,6 +167,8 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
       objections: safeArr(prospect?.objections_json),
       priorExchanges: prospect?.exchanges ?? 0,
       askedAbout: prospect?.last_asked_about ?? null,
+      askedDimensions: safeArr(prospect?.asked_dimensions_json),
+      isAcknowledgement: isAcknowledgementMessage(question),
     },
     history,
     // Signed so a click cannot be forged into another creator's attribution.
@@ -177,6 +180,9 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
     const s = generated.signals;
     const objections = [...new Set([...safeArr(prospect.objections_json), ...s.objections])];
     const topics = [...new Set([...safeArr(prospect.topics_json), ...s.topics])];
+    const askedDimensions = [
+      ...new Set([...safeArr(prospect.asked_dimensions_json), ...(s.asked_about ? [s.asked_about] : [])]),
+    ];
     const exchanges = (prospect.exchanges ?? 0) + 1;
     // Stored as one column for scoring purposes, even though the model
     // reports two distinct reasons — a content gap versus a self-disclosed
@@ -199,7 +205,7 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
             SET situation = COALESCE(?, situation), goal = COALESCE(?, goal), tried = COALESCE(?, tried),
                 blocked_on = COALESCE(?, blocked_on), objections_json = ?, topics_json = ?,
                 exchanges = ?, hit_boundary = ?, score = ?, last_seen_at = ?, name = COALESCE(name, ?),
-                last_asked_about = ?
+                last_asked_about = ?, asked_dimensions_json = ?
           WHERE id = ?`,
       )
       .run(
@@ -219,6 +225,7 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
         // asks nothing. Carrying a stale value forward would suppress a
         // legitimate question on a later turn.
         nullIfBlank(s.asked_about),
+        JSON.stringify(askedDimensions),
         prospect.id,
       );
 

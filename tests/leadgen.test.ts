@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { selectKnowledge, scoreProspect, buildEmailBody, type KnowledgeRow } from '../workers/leadgen/reply.js';
-import { buildDiscoveryState, type ProspectContext } from '../workers/leadgen/prompt.js';
+import { buildDiscoveryState, isAcknowledgementMessage, type ProspectContext } from '../workers/leadgen/prompt.js';
 
 function item(overrides: Partial<KnowledgeRow> & { id: string; problem: string }): KnowledgeRow {
   return {
@@ -172,6 +172,8 @@ function ctx(over: Partial<ProspectContext> = {}): ProspectContext {
     objections: [],
     priorExchanges: 0,
     askedAbout: null,
+    askedDimensions: [],
+    isAcknowledgement: false,
     ...over,
   };
 }
@@ -229,13 +231,13 @@ describe('buildDiscoveryState', () => {
   it('tells the model to drop a question it already asked and they did not answer', () => {
     // Re-asking an ignored question is the single fastest way a conversation
     // starts reading as an intake form.
-    const d = buildDiscoveryState(ctx({ situation: 'x', askedAbout: 'tried' }));
-    expect(d.text).toContain('already asked about "tried"');
-    expect(d.text).toContain('Move to a different gap');
+    const d = buildDiscoveryState(ctx({ situation: 'x', askedAbout: 'tried', askedDimensions: ['tried'] }));
+    expect(d.text).toContain('ALREADY ASKED, NEVER ASK AGAIN: tried');
+    expect(d.text).not.toContain('Gaps worth asking about: goal, tried');
   });
 
   it('says nothing about prior questions on a first contact', () => {
-    expect(buildDiscoveryState(ctx()).text).not.toContain('already asked about');
+    expect(buildDiscoveryState(ctx()).text).not.toContain('ALREADY ASKED');
   });
 
   it('never presents reservations as something to ask about', () => {
@@ -275,5 +277,56 @@ describe('buildDiscoveryState', () => {
     expect(d.text).toContain('BEFORE OPENING THIS EMAIL');
     expect(d.text).toContain('that gap is FILLED');
     expect(d.text).toContain('you can assess fit NOW');
+  });
+});
+
+describe('isAcknowledgementMessage', () => {
+  it('recognises the pleasantries that were answered with full lectures', () => {
+    // Verbatim from the live thread: each of these got a paragraph of
+    // methodology plus a repeated question in reply.
+    for (const t of ['Thanks for the tip!', 'Interesting.', 'Got it', 'ok cool', 'Makes sense', 'Appreciate it']) {
+      expect(isAcknowledgementMessage(t)).toBe(true);
+    }
+  });
+
+  it('does not misread a genuine question as a pleasantry', () => {
+    for (const t of [
+      'Thanks — how do I price this?',
+      'ok but what about landing pages?',
+      'How do I make my copy convert?',
+      'Getting sales',
+    ]) {
+      expect(isAcknowledgementMessage(t)).toBe(false);
+    }
+  });
+
+  it('does not treat a long message as an acknowledgement even if it opens with thanks', () => {
+    const long = 'Thanks for that. I run an agency doing paid ads for eight local service clients and I cannot keep up with the writing.';
+    expect(isAcknowledgementMessage(long)).toBe(false);
+  });
+
+  it('ignores empty or whitespace input', () => {
+    expect(isAcknowledgementMessage('   ')).toBe(false);
+  });
+});
+
+describe('buildDiscoveryState — never re-asking', () => {
+  it('removes every previously asked dimension from the askable list', () => {
+    // The live failure: the same question in five consecutive replies. The
+    // old guard only remembered the single previous turn.
+    const d = buildDiscoveryState(ctx({ askedDimensions: ['situation', 'goal'] }));
+    expect(d.text).toContain('ALREADY ASKED, NEVER ASK AGAIN: situation, goal');
+    expect(d.text).toContain('Gaps worth asking about: tried, blocked_on');
+  });
+
+  it('tells the model to ask nothing when every gap is spent', () => {
+    const d = buildDiscoveryState(ctx({ askedDimensions: ['situation', 'goal', 'tried', 'blocked_on'] }));
+    expect(d.text).toContain('no unasked gaps left');
+    expect(d.text).toContain('Do not ask anything this email');
+  });
+
+  it('still allows a question when some gaps remain unasked', () => {
+    const d = buildDiscoveryState(ctx({ askedDimensions: ['situation'] }));
+    expect(d.text).not.toContain('no unasked gaps left');
   });
 });
