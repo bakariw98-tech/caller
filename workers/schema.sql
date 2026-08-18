@@ -585,18 +585,32 @@ ALTER TABLE creators ADD COLUMN youtube_channel TEXT;
 ALTER TABLE creators ADD COLUMN youtube_continuation_token TEXT;
 
 -- Where a piece of knowledge came from, when it came from a video, and
--- whether it disagrees with something else the creator has said.
+-- whether it's close enough to something else the creator has said that
+-- the two deserve a look.
 --
 -- source_url is populated only for video-derived items (existing hand-pasted
 -- knowledge has none) so the coach can link the actual source when that is
 -- more useful than prose -- see workers/leadgen/prompt.ts.
 --
 -- conflicts_with is deliberately just a pointer to the other row, not an
--- attempt to resolve the disagreement: reconciling "test products quickly"
--- against "validate demand first" would be inventing a principle the
--- creator never stated, which is exactly the dishonesty this whole system
--- exists to avoid. Both rows stay retrievable; the creator resolves it in
--- the dashboard. See workers/leadgen/dedupe.ts.
+-- attempt to resolve anything: reconciling "test products quickly" against
+-- "validate demand first" into one principle would be inventing something
+-- the creator never actually said, which is exactly the dishonesty this
+-- whole system exists to avoid. It is also, measured on a real channel,
+-- deliberately named for what the signal can actually tell rather than
+-- what it might look like: two items land here on topic-similarity plus
+-- weak guidance overlap, and that combination catches real disagreements
+-- but just as often catches the same point restated with different tool
+-- names or numbers -- see dedupe.ts's GUIDANCE_AGREEMENT_THRESHOLD comment.
+-- Both rows stay retrievable; the creator is the one who can tell the two
+-- apart, in the dashboard. See workers/leadgen/dedupe.ts.
 ALTER TABLE knowledge_items ADD COLUMN source_url TEXT;
 ALTER TABLE knowledge_items ADD COLUMN tier INTEGER NOT NULL DEFAULT 2;
 ALTER TABLE knowledge_items ADD COLUMN conflicts_with TEXT REFERENCES knowledge_items(id) ON DELETE SET NULL;
+
+-- Real per-video xAI cost, the same discipline prospect_messages.cost_usd_micros
+-- already applies to replies -- this product pays for its own inference, so
+-- cost per video has to be a measured number, not an estimate discovered
+-- afterwards. Added after the first live channel run had no way to answer
+-- "what did that actually cost" beyond re-reading Worker logs.
+ALTER TABLE channel_videos ADD COLUMN cost_usd_micros INTEGER NOT NULL DEFAULT 0;

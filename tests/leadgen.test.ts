@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { selectKnowledge, scoreProspect, buildEmailBody, type KnowledgeRow } from '../workers/leadgen/reply.js';
+import {
+  selectKnowledge,
+  scoreProspect,
+  buildEmailBody,
+  normalizeVideoReference,
+  type KnowledgeRow,
+} from '../workers/leadgen/reply.js';
 import { buildDiscoveryState, looksLikeOptOut, type ProspectContext } from '../workers/leadgen/prompt.js';
 
 function item(overrides: Partial<KnowledgeRow> & { id: string; problem: string }): KnowledgeRow {
@@ -178,6 +184,48 @@ describe('buildEmailBody', () => {
 
   it('returns the body untouched when there is nothing to append', () => {
     expect(buildEmailBody({ body: 'Just an answer.' })).toBe('Just an answer.');
+  });
+
+  it('appends a referenced video link bare, right after the body and before the question', () => {
+    // Observed live: the model narrated "in this one, I show exactly how"
+    // and never wrote an actual URL anywhere in the reply — a dangling
+    // reference. Same failure mode offer links had before those became a
+    // structured field; fixed the same way.
+    const out = buildEmailBody({
+      body: 'I actually show this on screen in one of my videos.',
+      discoveryQuestion: 'What kind of product are you planning to sell?',
+      videoLink: 'https://www.youtube.com/watch?v=abc123',
+    });
+    expect(out).toBe(
+      'I actually show this on screen in one of my videos.\n\n' +
+        'https://www.youtube.com/watch?v=abc123\n\n' +
+        'What kind of product are you planning to sell?',
+    );
+  });
+
+  it('omits the video block entirely when nothing was referenced', () => {
+    const out = buildEmailBody({ body: 'Just an answer.', videoLink: null });
+    expect(out).toBe('Just an answer.');
+  });
+});
+
+describe('normalizeVideoReference', () => {
+  it('strips a leading "Situation:" label the model copied along with the text', () => {
+    // Observed live: the model copied the whole rendered "[1] Situation: ..."
+    // label into video_reference_problem instead of just the problem text,
+    // which silently broke the exact-match lookup and dropped a video link
+    // the reply had already narrated existed.
+    expect(normalizeVideoReference('Situation: How do I sell PDFs?')).toBe('how do i sell pdfs?');
+  });
+
+  it('is a no-op when the text has no label to strip', () => {
+    expect(normalizeVideoReference('How do I sell PDFs?')).toBe('how do i sell pdfs?');
+  });
+
+  it('matches regardless of case or surrounding whitespace', () => {
+    expect(normalizeVideoReference('  situation:   How do I sell PDFs?  ')).toBe(
+      normalizeVideoReference('How do I sell PDFs?'),
+    );
   });
 });
 

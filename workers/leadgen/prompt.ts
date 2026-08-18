@@ -549,12 +549,16 @@ export function buildReplyInstructions(params: {
               k.boundary
                 ? `    BOUNDARY — the free material stops here: ${k.boundary}${k.boundary_offer_name ? ` (picked up by: ${k.boundary_offer_name})` : ''}`
                 : '    No boundary — the free material covers this fully. Answer it and do not pitch.',
-              // A real video URL, not a link to invent one for. Include it
-              // in the reply ONLY when watching would genuinely serve them
-              // better than reading a paragraph — a visual/demo-heavy
-              // topic — not as decoration on every reply that happens to
-              // touch this material.
-              k.source_url ? `    Video this is from: ${k.source_url}` : '',
+              // A video exists for this item. Whether to point them to it is
+              // a judgment call for video_reference_problem, not something
+              // to decide by writing the URL here — see that field's
+              // description for why: the model narrating a link in prose
+              // reliably drops the actual address, the same failure mode
+              // offer links had before those were made a structured field
+              // too. Only mention that a video exists ("I actually show
+              // this on screen") when it would genuinely serve them better
+              // than the paragraph — not as decoration on every reply.
+              k.source_url ? `    (A video exists for this — see video_reference_problem if it's worth pointing them to.)` : '',
             ];
             return parts.filter(Boolean).join('\n');
           }),

@@ -99,6 +99,7 @@ export interface IngestTickSummary {
   conflicts: number;
   failed: number;
   quotaExhausted: boolean;
+  costUsdMicros: number;
 }
 
 /**
@@ -108,12 +109,25 @@ export interface IngestTickSummary {
  * ticks must not both grab the same video.
  */
 export async function processIngestBatch(env: Env, db: SqlDb): Promise<IngestTickSummary> {
-  const summary: IngestTickSummary = { processed: 0, merged: 0, conflicts: 0, failed: 0, quotaExhausted: false };
+  const summary: IngestTickSummary = {
+    processed: 0,
+    merged: 0,
+    conflicts: 0,
+    failed: 0,
+    quotaExhausted: false,
+    costUsdMicros: 0,
+  };
 
+  // Includes stale 'processing' rows, not just 'pending' ones — a request
+  // killed mid-video by Cloudflare's own CPU/wall-time limits (a real risk
+  // here: transcript fetch + xAI extraction + embedding in one job) leaves
+  // a row claimed but never finished. Without this, that row is gated out
+  // by status forever even once its lock expires, wedging that one video
+  // permanently despite the lock itself being designed to be reclaimable.
   const candidates = await db
     .prepare(
       `SELECT id, creator_id, video_id, title, url, tier, attempts FROM channel_videos
-        WHERE status = 'pending' AND (locked_until IS NULL OR locked_until < ?)
+        WHERE status IN ('pending', 'processing') AND (locked_until IS NULL OR locked_until < ?)
         ORDER BY tier ASC, discovered_at ASC LIMIT ?`,
     )
     .all<{ id: string; creator_id: string; video_id: string; title: string; url: string; tier: number; attempts: number }>(
@@ -123,18 +137,24 @@ export async function processIngestBatch(env: Env, db: SqlDb): Promise<IngestTic
 
   for (const video of candidates) {
     const claim = await db
-      .prepare(`UPDATE channel_videos SET locked_until = ?, status = 'processing' WHERE id = ? AND status = 'pending'`)
-      .run(now() + VIDEO_LOCK_SECONDS, video.id);
+      .prepare(
+        `UPDATE channel_videos SET locked_until = ?, status = 'processing'
+          WHERE id = ? AND status IN ('pending', 'processing') AND (locked_until IS NULL OR locked_until < ?)`,
+      )
+      .run(now() + VIDEO_LOCK_SECONDS, video.id, now());
     if (claim.changes === 0) continue; // another tick already took it
 
     try {
       const result = await ingestOneVideo(env, db, video);
       summary.processed++;
+      summary.costUsdMicros += result.costUsdMicros;
       if (result.merged) summary.merged++;
       if (result.conflicts) summary.conflicts++;
       await db
-        .prepare(`UPDATE channel_videos SET status = 'done', locked_until = NULL, processed_at = ? WHERE id = ?`)
-        .run(now(), video.id);
+        .prepare(
+          `UPDATE channel_videos SET status = 'done', locked_until = NULL, processed_at = ?, cost_usd_micros = ? WHERE id = ?`,
+        )
+        .run(now(), result.costUsdMicros, video.id);
     } catch (err) {
       const attempts = video.attempts + 1;
       const isQuota = err instanceof TranscriptApiQuotaError;
@@ -157,7 +177,7 @@ async function ingestOneVideo(
   env: Env,
   db: SqlDb,
   video: { id: string; creator_id: string; video_id: string; title: string; url: string; tier: number },
-): Promise<{ merged: number; conflicts: number }> {
+): Promise<{ merged: number; conflicts: number; costUsdMicros: number }> {
   const transcript = await getTranscript({ apiKey: env.TRANSCRIPT_API_KEY }, video.video_id);
   const text = transcript.transcript.map((seg) => seg.text).join(' ');
 
@@ -178,11 +198,19 @@ async function ingestOneVideo(
     // spoken teaching) is a normal outcome, not a failure to retry —
     // NoUsableContentError specifically means "nothing was there", so this
     // video is done, just with zero items.
-    if (err instanceof NoUsableContentError) return { merged: 0, conflicts: 0 };
+    if (err instanceof NoUsableContentError) return { merged: 0, conflicts: 0, costUsdMicros: 0 };
     throw err;
   }
 
-  if (!extraction.items.length) return { merged: 0, conflicts: 0 };
+  // Same units prospect_messages.cost_usd_micros already uses — this
+  // product pays for its own inference on both sides (replies AND
+  // ingestion), so cost per video has to be a measured number, not an
+  // estimate discovered afterwards. Embedding calls are not tracked here,
+  // matching reply.ts's existing usage tracking, which only covers the
+  // xAI text-generation calls.
+  const costUsdMicros = Math.round(extraction.usage.costUsd * 1e6);
+
+  if (!extraction.items.length) return { merged: 0, conflicts: 0, costUsdMicros };
 
   const offerIdByName = new Map(offers.map((o) => [o.name.toLowerCase(), o.id]));
   const vectors = await embedPassages(
@@ -229,18 +257,14 @@ async function ingestOneVideo(
     }
 
     const newId = id('kn');
-    if (decision.action === 'conflict') {
-      conflicts++;
-      // Only set the existing row's back-pointer if it does not already
-      // have one — first conflict found wins the link rather than a later
-      // one silently overwriting it, matching this codebase's existing
-      // COALESCE-style "don't clobber what's already been recorded"
-      // convention (see pipeline.ts's COALESCE merge).
-      await db
-        .prepare(`UPDATE knowledge_items SET conflicts_with = COALESCE(conflicts_with, ?) WHERE id = ?`)
-        .run(newId, decision.matchId);
-    }
+    if (decision.action === 'conflict') conflicts++;
 
+    // Insert BEFORE linking the existing row back to it — conflicts_with
+    // has a foreign key onto knowledge_items(id), and SQLite enforces FK
+    // constraints immediately rather than deferring to commit, so pointing
+    // the existing row at newId before newId exists fails outright. Found
+    // live: every conflict decision on the real channel errored with
+    // "FOREIGN KEY constraint failed" until this was reordered.
     await db
       .prepare(
         `INSERT INTO knowledge_items
@@ -265,7 +289,18 @@ async function ingestOneVideo(
         encodeVector(vec),
         now(),
       );
+
+    if (decision.action === 'conflict') {
+      // Only set the existing row's back-pointer if it does not already
+      // have one — first conflict found wins the link rather than a later
+      // one silently overwriting it, matching this codebase's existing
+      // COALESCE-style "don't clobber what's already been recorded"
+      // convention (see pipeline.ts's COALESCE merge).
+      await db
+        .prepare(`UPDATE knowledge_items SET conflicts_with = COALESCE(conflicts_with, ?) WHERE id = ?`)
+        .run(newId, decision.matchId);
+    }
   }
 
-  return { merged, conflicts };
+  return { merged, conflicts, costUsdMicros };
 }

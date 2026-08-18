@@ -313,10 +313,14 @@ leadgenRoute.get('/api/creators/:id/youtube/status', async (c) => {
 
   const conflicts = await db
     .prepare(
+      // The back-pointer is set on both rows (see ingest.ts), so a plain
+      // join returns each pair twice, once from each side. a.id < b.id
+      // picks one direction only, since a pair has no natural "primary"
+      // side — the ordering is arbitrary and just needs to be consistent.
       `SELECT a.id AS a_id, a.problem AS a_problem, a.guidance AS a_guidance, a.source_url AS a_url,
               b.id AS b_id, b.problem AS b_problem, b.guidance AS b_guidance, b.source_url AS b_url
          FROM knowledge_items a JOIN knowledge_items b ON b.id = a.conflicts_with
-        WHERE a.creator_id = ?`,
+        WHERE a.creator_id = ? AND a.id < b.id`,
     )
     .all(creatorId);
 

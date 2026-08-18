@@ -228,6 +228,8 @@ export interface QualificationSignals {
   /** Distinct from hit_boundary: they described themselves as who an offer is for, independent of any content gap. */
   qualifies_for_offer: boolean;
   routed_offer_name: string | null;
+  /** Exact problem text of the knowledge item whose source video you told them to watch, if any. */
+  video_reference_problem: string | null;
   answered_from_material: boolean;
 }
 
@@ -321,6 +323,18 @@ const replyJson = {
       type: 'string',
       description: 'Exact name of the offer you pointed them to, if you did. Omit if you did not.',
     },
+    video_reference_problem: {
+      type: 'string',
+      description:
+        'If — and only if — a specific video would genuinely serve them better than the paragraph you just ' +
+        'wrote (something visual or demonstrated on screen, not just discussed), copy the situation text of ' +
+        'that item from the material above into this field, character for character. Copy ONLY the situation ' +
+        'text itself — each item above is labelled "Situation: <text>"; copy <text>, and do not include the ' +
+        'word "Situation" or the colon. You may mention that a video exists in body ("I actually show this on ' +
+        'screen in one of my videos") but never write out the link or video title yourself — you do not ' +
+        'reliably know the real URL, and the actual link is inserted afterward from this field. Omit entirely ' +
+        'when nothing above is worth pointing them to a video for.',
+    },
     offer_pitch: {
       type: 'string',
       description:
@@ -367,6 +381,21 @@ const replyJson = {
  * model emits both rather than silently discarding output it produced: the
  * question sits with the help, and the pitch plus link close the email.
  */
+
+/**
+ * Normalizes a knowledge item's `problem` text for matching against
+ * `video_reference_problem`. Strips a leading "Situation:" label if
+ * present — the knowledge block in the prompt renders each item as
+ * "Situation: <problem>", and observed live: the model copied the whole
+ * rendered label, prefix included, into the field meant to hold just
+ * <problem>. The instruction was tightened to ask for <problem> alone, but
+ * this stays as the deterministic backstop — an exact-match lookup that
+ * only works when the model's copy is letter-perfect is exactly the kind
+ * of prompt-only guarantee this codebase does not rely on.
+ */
+export function normalizeVideoReference(s: string): string {
+  return s.trim().replace(/^situation:\s*/i, '').trim().toLowerCase();
+}
 export function buildEmailBody(parts: {
   body: string;
   discoveryQuestion?: string | null;
@@ -375,6 +404,17 @@ export function buildEmailBody(parts: {
   link?: string | null;
   /** Free resources read better woven into the body, so they get no added framing line. */
   isFreeResource?: boolean;
+  /**
+   * A knowledge item's source video, when the model referenced one. Same
+   * problem as the offer link, observed live in exactly the same shape: the
+   * model narrated "in this one, I show..." with no URL anywhere in the
+   * reply — it knows a video exists but cannot reliably produce the real
+   * address as literal text, the same reason offer links are never trusted
+   * to appear correctly inside free-form body. Appended bare, no framing
+   * sentence, for the same reason a free resource's link needs none — the
+   * reference already lives naturally in the prose the model wrote.
+   */
+  videoLink?: string | null;
 }): string {
   let body = parts.body.trimEnd();
   const question = parts.discoveryQuestion?.trim();
@@ -390,6 +430,7 @@ export function buildEmailBody(parts: {
   }
 
   const blocks = [body];
+  if (parts.videoLink) blocks.push(parts.videoLink);
   if (question) blocks.push(question);
 
   if (parts.link) {
@@ -477,6 +518,7 @@ export async function generateReply(params: {
     hit_boundary: boolean;
     qualifies_for_offer: boolean;
     routed_offer_name?: string;
+    video_reference_problem?: string;
     offer_pitch?: string;
     answered_from_material: boolean;
     message_type?: MessageType;
@@ -513,6 +555,17 @@ export async function generateReply(params: {
   const isFreeResource = Boolean(namedOffer?.is_free);
   const routedOfferId = namedOffer && (isFreeResource || value.next_action === 'offer') ? namedOfferId : null;
 
+  // Resolved the same way routed_offer_name is: an exact match against a
+  // list the model actually saw, never invented. A video only gets linked
+  // if it (a) exists in the retrieved material, not hallucinated, and (b)
+  // actually has a source_url — hand-pasted knowledge has none, so a
+  // reference to it is silently dropped rather than sending a broken link.
+  const referencedVideo = value.video_reference_problem
+    ? params.knowledge.find(
+        (k) => normalizeVideoReference(k.problem) === normalizeVideoReference(value.video_reference_problem!),
+      )
+    : undefined;
+
   const routedOffer = routedOfferId ? params.offers.find((o) => o.id === routedOfferId) : undefined;
   const body = buildEmailBody({
     body: value.body,
@@ -521,6 +574,7 @@ export async function generateReply(params: {
     offerPitch: value.offer_pitch,
     link: routedOffer ? params.offerLink(routedOffer.id) : null,
     isFreeResource,
+    videoLink: referencedVideo?.source_url ?? null,
   });
 
   return {
@@ -544,6 +598,7 @@ export async function generateReply(params: {
       hit_boundary: Boolean(value.hit_boundary),
       qualifies_for_offer: Boolean(value.qualifies_for_offer),
       routed_offer_name: value.routed_offer_name ?? null,
+      video_reference_problem: value.video_reference_problem ?? null,
       answered_from_material: Boolean(value.answered_from_material),
     },
     routedOfferId,

@@ -73,10 +73,27 @@ export const TOPIC_MATCH_THRESHOLD = 0.85;
 /**
  * Overlap-coefficient floor (shared tokens / smaller token set) on the
  * GUIDANCE text alone, within a topic match, for the two rows to count as
- * agreeing rather than conflicting. Overlap coefficient rather than Jaccard
- * because one video's restatement of a point is often a subset of another's
- * fuller explanation — penalising that for differing length would flag
- * agreement as conflict.
+ * agreeing rather than landing in conflicts_with. Overlap coefficient rather
+ * than Jaccard because one video's restatement of a point is often a subset
+ * of another's fuller explanation — penalising that for differing length
+ * would flag agreement as a mismatch.
+ *
+ * Measured live on a real 100+ video channel, and the two distributions this
+ * is trying to separate do not cleanly separate: a same-video pair
+ * restating one specific recommendation ("build a simpler version using
+ * Base 44, price around $29, model the ads") scored 0.308 purely because
+ * the two videos named different specific tools and numbers on the way to
+ * saying the same thing, while several genuinely different pieces of advice
+ * on nearby topics scored 0.30-0.34 too. There is no threshold value here
+ * that reliably tells "restated" from "related but distinct" apart on real
+ * text — this is a coarse token signal, not a semantic one, and raising or
+ * lowering it just moves which side gets the wrong answer more often.
+ *
+ * Given that, this stays conservative (biased toward "flag for the creator"
+ * over "auto-merge and possibly discard real guidance") rather than
+ * chasing a cleaner cutoff that the measurement shows does not exist. See
+ * the knowledge_items.conflicts_with schema comment — the label this
+ * produces is "similar enough to look at", not "confirmed disagreement".
  */
 export const GUIDANCE_AGREEMENT_THRESHOLD = 0.35;
 

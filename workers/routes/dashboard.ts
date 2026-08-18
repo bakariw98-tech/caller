@@ -257,7 +257,9 @@ const PAGE = /* html */ `<!doctype html>
       if (!d.conflicts || !d.conflicts.length) { box.innerHTML = ''; return; }
       box.innerHTML = '<p class="note" style="margin-top:1rem"><b>' + d.conflicts.length +
         ' place' + (d.conflicts.length === 1 ? '' : 's') +
-        ' where two videos disagree.</b> Nothing was merged or guessed at — pick which one is right, or leave both.</p>';
+        ' where two videos say close to the same thing, close enough that it wasn\'t confident they fully agree.</b> ' +
+        'Nothing was merged or guessed at — this could be a real difference in advice, or just different wording ' +
+        'for the same point. Only you know which.</p>';
       d.conflicts.forEach(function (pair) {
         var n = document.createElement('div');
         n.className = 'item';
@@ -265,7 +267,7 @@ const PAGE = /* html */ `<!doctype html>
           '<h3>' + esc(pair.a_problem) + '</h3>' +
           '<p><b>A:</b> ' + esc(pair.a_guidance) + (pair.a_url ? ' — <a href="' + esc(pair.a_url) + '" target="_blank" rel="noopener">video</a>' : '') + '</p>' +
           '<p><b>B:</b> ' + esc(pair.b_guidance) + (pair.b_url ? ' — <a href="' + esc(pair.b_url) + '" target="_blank" rel="noopener">video</a>' : '') + '</p>' +
-          '<div class="row" style="margin-top:.5rem"><button class="danger yt-dismiss" type="button">Dismiss — both are fine as-is</button></div>';
+          '<div class="row" style="margin-top:.5rem"><button class="danger yt-dismiss" type="button">Dismiss — leave both as-is</button></div>';
         n.querySelector('.yt-dismiss').onclick = function () {
           api('/api/creators/' + CID + '/youtube/conflicts/' + pair.a_id + '/dismiss', { method: 'POST' })
             .then(loadYoutube);
