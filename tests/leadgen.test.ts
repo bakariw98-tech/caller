@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { selectKnowledge, scoreProspect, attachOfferLink, type KnowledgeRow } from '../workers/leadgen/reply.js';
+import { selectKnowledge, scoreProspect, buildRoutedBody, type KnowledgeRow } from '../workers/leadgen/reply.js';
 
 function item(overrides: Partial<KnowledgeRow> & { id: string; problem: string }): KnowledgeRow {
   return {
@@ -101,24 +101,39 @@ describe('scoreProspect', () => {
   });
 });
 
-describe('attachOfferLink', () => {
+describe('buildRoutedBody', () => {
   const LINK = 'https://example.test/r/offer_1.prospect_1.abcd';
 
-  it('appends the link when the model left it out', () => {
-    // Click attribution is the only evidence the product made the creator
-    // money, so a routed reply without a link is a silent failure.
-    const out = attachOfferLink('The free material stops there.', 'The Retainer Playbook', LINK);
+  it('assembles help, then the specific pitch, then the link — never a bare append', () => {
+    // The bug this replaced: the offer mention lived inside free-form body
+    // text the model could shortchange, so a routed reply sometimes ended in
+    // a URL with nothing persuasive around it. offer_pitch is now a separate
+    // required-when-routing field, guaranteeing a real bridge sentence exists.
+    const out = buildRoutedBody(
+      'The free material stops there.',
+      'The Retainer Playbook',
+      'Since you mentioned five one-off clients turning into repeat work, the Playbook covers exactly the scope-fencing conversation you need next.',
+      LINK,
+    );
+    expect(out).toContain('five one-off clients');
     expect(out).toContain(LINK);
-    expect(out).toContain('The Retainer Playbook');
+    // The link must not be the very next thing after the help text with
+    // nothing between — that reads as a bare drop, which is the complaint
+    // this function exists to fix.
+    const linkIndex = out.indexOf(LINK);
+    expect(out.slice(0, linkIndex)).toContain('scope-fencing');
   });
 
-  it('leaves the body alone when the model already wove the link in', () => {
-    const body = `Have a look at the Playbook: ${LINK} — it covers the scope fencing.`;
-    expect(attachOfferLink(body, 'The Retainer Playbook', LINK)).toBe(body);
+  it('still includes a real sentence, not a naked link, when the model routes without writing a pitch', () => {
+    const out = buildRoutedBody('Body text.', 'Offer', undefined, LINK);
+    expect(out).toContain(LINK);
+    expect(out).toContain('Offer');
+    // Must not degrade to "Offer: <link>" with no framing at all.
+    expect(out).not.toMatch(/^Body text\.\n\nOffer: /);
   });
 
   it('does not double-space when the body already ends in a newline', () => {
-    const out = attachOfferLink('Body text.\n\n', 'Offer', LINK);
-    expect(out).toBe(`Body text.\n\nOffer: ${LINK}`);
+    const out = buildRoutedBody('Body text.\n\n', 'Offer', 'A real pitch sentence.', LINK);
+    expect(out).toBe(`Body text.\n\nA real pitch sentence.\n\n${LINK}`);
   });
 });

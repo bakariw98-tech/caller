@@ -208,6 +208,13 @@ const replyJson = {
       type: 'string',
       description: 'Exact name of the offer you pointed them to, if you did. Omit if you did not.',
     },
+    offer_pitch: {
+      type: 'string',
+      description:
+        'ONLY when routed_offer_name is set: 1-3 sentences bridging their specific situation to the specific ' +
+        'thing the offer does for it. This is the only place the offer is mentioned — do not also reference it ' +
+        'in body. Omit entirely when not routing.',
+    },
     answered_from_material: {
       type: 'boolean',
       description: "True if you answered from the creator's material; false if you had to say it wasn't covered.",
@@ -228,22 +235,27 @@ const replyJson = {
  * needing a separate qualification step.
  */
 /**
- * Guarantees a routed reply carries its tracking link.
+ * Assembles the final email when routing: the help, then the pitch, then the
+ * link — never a bare URL appended to whatever the model happened to write.
  *
- * The prompt asks for the link twice and the model still omitted it in live
- * testing, while reporting the routed offer correctly in the structured output
- * every time — so the reliable signal is the structured field, not the prose.
- * A mention without a link is worthless to the creator, because offer_clicks is
- * the only evidence any of this made them money. Same lesson as record_progress
- * on the phone side: when a mechanical step depends on model discipline and the
- * model is inconsistent, do it in code instead.
+ * `offer_pitch` is a separate structured field rather than something folded
+ * into free-form `body` for a concrete reason: when the offer mention lived
+ * inside the main prose, it was inconsistent — sometimes a real, specific
+ * bridge to what the person said, sometimes nothing more than the model
+ * trailing off with a URL on its own line, because writing the answer and
+ * managing the pitch and remembering the link were all one undifferentiated
+ * task competing for the same attention. Splitting it into its own required
+ * generation target is what makes the pitch reliable rather than occasional.
  *
- * If the model did include the link, this leaves the body untouched — its own
- * phrasing reads better than an appended line.
+ * Falls back to a plain, honest line if the model routed but skipped the
+ * pitch anyway — still worse than a real one, but never a naked link with
+ * nothing around it, and never silently drops the link the way a bare
+ * append-if-missing check previously could.
  */
-export function attachOfferLink(body: string, offerName: string, link: string): string {
-  if (body.includes(link)) return body;
-  return `${body.trimEnd()}\n\n${offerName}: ${link}`;
+export function buildRoutedBody(body: string, offerName: string, offerPitch: string | undefined, link: string): string {
+  const pitch = offerPitch?.trim();
+  const closer = pitch || `You can find ${offerName} here:`;
+  return `${body.trimEnd()}\n\n${closer}\n\n${link}`;
 }
 
 export async function generateReply(params: {
@@ -307,6 +319,7 @@ export async function generateReply(params: {
     hit_boundary: boolean;
     qualifies_for_offer: boolean;
     routed_offer_name?: string;
+    offer_pitch?: string;
     answered_from_material: boolean;
   }>(params.apiBase, params.apiKey, {
     model: params.model,
@@ -322,7 +335,7 @@ export async function generateReply(params: {
 
   const routedOffer = routedOfferId ? params.offers.find((o) => o.id === routedOfferId) : undefined;
   const body = routedOffer
-    ? attachOfferLink(value.body, routedOffer.name, params.offerLink(routedOffer.id))
+    ? buildRoutedBody(value.body, routedOffer.name, value.offer_pitch, params.offerLink(routedOffer.id))
     : value.body;
 
   return {
