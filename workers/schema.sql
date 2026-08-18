@@ -501,3 +501,32 @@ ALTER TABLE prospects ADD COLUMN asked_dimensions_json TEXT NOT NULL DEFAULT '[]
 -- a coaching response like any other message, which is both a bad experience
 -- and the kind of thing that gets a sending address blocked.
 ALTER TABLE prospects ADD COLUMN opted_out INTEGER NOT NULL DEFAULT 0;
+
+-- The conversational sales progression: QUESTION -> SITUATION -> PROBLEM ->
+-- DESIRED OUTCOME -> GAP -> OFFER. The earlier columns captured what someone
+-- SAID; these capture what has been worked out about them, which is what
+-- actually earns a recommendation.
+--
+-- diagnosed_problem is deliberately distinct from blocked_on: blocked_on is
+-- their own account of what is wrong ("I'm not getting sales"), while this is
+-- the real bottleneck identified from it ("traffic is fine, the product page
+-- is not converting"). Naming that correctly is the moment a prospect decides
+-- this thing knows what it is talking about, and it is what a recommendation
+-- has to connect to.
+ALTER TABLE prospects ADD COLUMN diagnosed_problem TEXT;
+-- What they already understand. Changes the reason an offer fits: someone
+-- short of information needs teaching; someone who knows the basics but is
+-- assembling it alone needs a system. Those are completely different pitches.
+ALTER TABLE prospects ADD COLUMN knowledge_level TEXT;
+-- Why it matters to them and by when — "wants to quit their job" is a
+-- different conversation from idle curiosity.
+ALTER TABLE prospects ADD COLUMN urgency TEXT;
+-- The real success metric: they ASKED for the offer rather than being handed
+-- it. Link-sends measure activity; this measures whether enough understanding
+-- was built that the person wanted the next step.
+ALTER TABLE prospects ADD COLUMN requested_offer INTEGER NOT NULL DEFAULT 0;
+
+-- Whether an offer has already been recommended. Without this the coach
+-- pitched the same offer on consecutive emails, which turns a recommendation
+-- into nagging — the link is already in their inbox.
+ALTER TABLE prospects ADD COLUMN offer_pitched INTEGER NOT NULL DEFAULT 0;

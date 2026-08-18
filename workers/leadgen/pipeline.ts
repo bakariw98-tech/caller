@@ -164,10 +164,14 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
       goal: prospect?.goal ?? null,
       tried: prospect?.tried ?? null,
       blocked_on: prospect?.blocked_on ?? null,
+      diagnosedProblem: prospect?.diagnosed_problem ?? null,
+      knowledgeLevel: prospect?.knowledge_level ?? null,
+      urgency: prospect?.urgency ?? null,
       objections: safeArr(prospect?.objections_json),
       priorExchanges: prospect?.exchanges ?? 0,
       askedAbout: prospect?.last_asked_about ?? null,
       askedDimensions: safeArr(prospect?.asked_dimensions_json),
+      alreadyPitched: Boolean(prospect?.offer_pitched),
     },
     history,
     // Signed so a click cannot be forged into another creator's attribution.
@@ -210,7 +214,10 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
       .prepare(
         `UPDATE prospects
             SET situation = COALESCE(?, situation), goal = COALESCE(?, goal), tried = COALESCE(?, tried),
-                blocked_on = COALESCE(?, blocked_on), objections_json = ?, topics_json = ?,
+                blocked_on = COALESCE(?, blocked_on), diagnosed_problem = COALESCE(?, diagnosed_problem),
+                knowledge_level = COALESCE(?, knowledge_level), urgency = COALESCE(?, urgency),
+                requested_offer = MAX(requested_offer, ?), offer_pitched = MAX(offer_pitched, ?),
+                objections_json = ?, topics_json = ?,
                 exchanges = ?, hit_boundary = ?, score = ?, last_seen_at = ?, name = COALESCE(name, ?),
                 last_asked_about = ?, asked_dimensions_json = ?
           WHERE id = ?`,
@@ -220,6 +227,11 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
         nullIfBlank(s.goal),
         nullIfBlank(s.tried),
         nullIfBlank(s.blocked_on),
+        nullIfBlank(s.diagnosed_problem),
+        nullIfBlank(s.knowledge_level),
+        nullIfBlank(s.urgency),
+        s.requested_offer ? 1 : 0,
+        generated.routedOfferId ? 1 : 0,
         JSON.stringify(objections),
         JSON.stringify(topics),
         exchanges,

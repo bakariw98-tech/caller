@@ -177,10 +177,20 @@ export type MessageType =
   | 'opt_out'
   | 'other';
 
+export type NextAction = 'answer' | 'diagnose' | 'teach' | 'win' | 'offer';
+
 export interface QualificationSignals {
   /** What the inbound message actually is. Drives how the reply is shaped. */
   message_type: MessageType;
+  /** The most useful move this turn — asking is only one of the options. */
+  next_action: NextAction;
   situation: string | null;
+  /** The real bottleneck, diagnosed rather than reported. */
+  diagnosed_problem: string | null;
+  knowledge_level: string | null;
+  urgency: string | null;
+  /** They asked for the offer rather than being handed it — the metric that matters. */
+  requested_offer: boolean;
   /** What they want — the destination half of the gap an offer closes. */
   goal: string | null;
   tried: string | null;
@@ -228,9 +238,34 @@ const replyJson = {
       ],
       description: 'What this message actually IS. Decide this before writing anything else.',
     },
+    // Chosen before the body, for the same autoregressive reason as
+    // message_type: deciding what the most useful move IS conditions what
+    // gets written, instead of labelling it afterwards.
+    next_action: {
+      type: 'string',
+      enum: ['answer', 'diagnose', 'teach', 'win', 'offer'],
+      description: 'The most useful thing you can do for this person right now. Decide before writing the body.',
+    },
     body: { type: 'string', description: 'The email body. No subject line, no signature.' },
     situation: { type: 'string', description: "The person's situation, if they described one." },
     goal: { type: 'string', description: 'What they actually want — the outcome they are after, if stated.' },
+    diagnosed_problem: {
+      type: 'string',
+      description:
+        'The REAL bottleneck as you have worked it out — not merely what they reported. "Traffic is fine, ' +
+        'the product page is not converting" rather than "not getting sales". Only when you can actually tell.',
+    },
+    knowledge_level: {
+      type: 'string',
+      description: 'What they already understand about this subject, if it is evident.',
+    },
+    urgency: { type: 'string', description: 'Why this matters to them and by when, if stated.' },
+    requested_offer: {
+      type: 'boolean',
+      description:
+        'True only if THEY asked for the offer, the link, or the price — rather than you raising it. ' +
+        'The measure of whether enough understanding was built that they wanted the next step.',
+    },
     tried: { type: 'string', description: 'What they have already tried, if stated.' },
     blocked_on: { type: 'string', description: 'What is actually in their way, if clear.' },
     discovery_question: {
@@ -273,7 +308,7 @@ const replyJson = {
       description: "True if you answered from the creator's material; false if you had to say it wasn't covered.",
     },
   },
-  required: ['message_type', 'body', 'objections', 'topics', 'hit_boundary', 'qualifies_for_offer', 'answered_from_material'],
+  required: ['message_type', 'next_action', 'body', 'objections', 'topics', 'hit_boundary', 'qualifies_for_offer', 'answered_from_material'],
   additionalProperties: false,
 } as const;
 
@@ -409,6 +444,11 @@ export async function generateReply(params: {
     offer_pitch?: string;
     answered_from_material: boolean;
     message_type?: MessageType;
+    next_action?: NextAction;
+    diagnosed_problem?: string;
+    knowledge_level?: string;
+    urgency?: string;
+    requested_offer?: boolean;
   }>(params.apiBase, params.apiKey, {
     model: params.model,
     system,
@@ -417,9 +457,19 @@ export async function generateReply(params: {
     schema: replyJson as unknown as Record<string, unknown>,
   });
 
-  const routedOfferId = value.routed_offer_name
-    ? (offerNameById.get(value.routed_offer_name.trim().toLowerCase()) ?? null)
-    : null;
+  // Routing is gated on the chosen action, deterministically.
+  //
+  // Observed live: the model picked `win` — give them something genuinely
+  // useful they can act on immediately — wrote an excellent one, and then
+  // pitched in the same email anyway. That undercuts the exact thing the win
+  // move exists to build. Trust first, recommendation later, and never both
+  // in one breath. Only `offer` may route, and that is enforced here rather
+  // than asked for, because a prompt cannot reliably hold a line the model
+  // has a standing incentive to cross.
+  const routedOfferId =
+    value.next_action === 'offer' && value.routed_offer_name
+      ? (offerNameById.get(value.routed_offer_name.trim().toLowerCase()) ?? null)
+      : null;
 
   const routedOffer = routedOfferId ? params.offers.find((o) => o.id === routedOfferId) : undefined;
   const body = buildEmailBody({
@@ -434,7 +484,12 @@ export async function generateReply(params: {
     body,
     signals: {
       message_type: value.message_type ?? 'other',
+      next_action: value.next_action ?? 'answer',
       situation: value.situation ?? null,
+      diagnosed_problem: value.diagnosed_problem ?? null,
+      knowledge_level: value.knowledge_level ?? null,
+      urgency: value.urgency ?? null,
+      requested_offer: Boolean(value.requested_offer),
       goal: value.goal ?? null,
       tried: value.tried ?? null,
       blocked_on: value.blocked_on ?? null,

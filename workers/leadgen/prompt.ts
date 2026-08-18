@@ -24,11 +24,20 @@ export interface ProspectContext {
   /** What they want — the destination. The gap between this and `situation` is what an offer closes. */
   goal: string | null;
   tried: string | null;
+  /** Their own account of what is wrong. */
   blocked_on: string | null;
+  /** The real bottleneck, as diagnosed — not merely what they reported. */
+  diagnosedProblem: string | null;
+  /** What they already understand. Decides whether an offer is teaching or a system. */
+  knowledgeLevel: string | null;
+  /** Why this matters to them, and by when. */
+  urgency: string | null;
   objections: string[];
   priorExchanges: number;
   /** Which dimension the previous reply asked about. */
   askedAbout: string | null;
+  /** An offer has already been recommended to them at least once. */
+  alreadyPitched: boolean;
   /** EVERY dimension ever asked about. `askedAbout` alone only guarded one turn back. */
   askedDimensions: string[];
 }
@@ -54,14 +63,26 @@ export function looksLikeOptOut(text: string): boolean {
 }
 
 /** The discovery dimensions, in the order they are shown to the model. */
-export const DISCOVERY_DIMENSIONS = ['situation', 'goal', 'tried', 'blocked_on', 'objections'] as const;
+export const DISCOVERY_DIMENSIONS = [
+  'situation',
+  'diagnosed_problem',
+  'goal',
+  'knowledge_level',
+  'urgency',
+  'tried',
+  'blocked_on',
+  'objections',
+] as const;
 export type DiscoveryDimension = (typeof DISCOVERY_DIMENSIONS)[number];
 
 const DIMENSION_LABELS: Record<DiscoveryDimension, string> = {
-  situation: 'Their situation — what they do, what stage they are at',
-  goal: 'What they actually want — the outcome they are after',
+  situation: 'SITUATION — what they do, how long, what they are working with',
+  diagnosed_problem: 'PROBLEM — the real bottleneck you have identified, not just what they reported',
+  goal: 'DESIRED OUTCOME — what they actually want this to produce',
+  knowledge_level: 'What they already understand (decides whether they need teaching or a system)',
+  urgency: 'Why it matters to them, and by when',
   tried: 'What they have already tried',
-  blocked_on: 'What is actually stopping them',
+  blocked_on: 'What they say is stopping them',
   objections: 'Reservations or doubts they hold',
 };
 
@@ -74,7 +95,12 @@ export interface DiscoveryState {
    * a recommendation without one of those is a guess dressed as advice.
    */
   canAssessFit: boolean;
-  stage: 'cold' | 'warming' | 'understood' | 'ready';
+  /**
+   * Where the conversation actually is, semantically — not a count of filled
+   * fields. A recommendation is earned by moving through these, and the state
+   * decides what the most useful next move is.
+   */
+  stage: 'question' | 'situation' | 'problem' | 'outcome' | 'gap';
   /** The rendered block handed to the model. */
   text: string;
 }
@@ -94,7 +120,10 @@ export interface DiscoveryState {
 export function buildDiscoveryState(p: ProspectContext): DiscoveryState {
   const value: Record<DiscoveryDimension, string | null> = {
     situation: p.situation,
+    diagnosed_problem: p.diagnosedProblem,
     goal: p.goal,
+    knowledge_level: p.knowledgeLevel,
+    urgency: p.urgency,
     tried: p.tried,
     blocked_on: p.blocked_on,
     objections: p.objections.length ? p.objections.join('; ') : null,
@@ -108,15 +137,23 @@ export function buildDiscoveryState(p: ProspectContext): DiscoveryState {
   // checklist-completion behaviour that makes a conversation feel like a form.
   const alreadyAsked = new Set(p.askedDimensions);
   const askable = missing.filter((d) => d !== 'objections' && !alreadyAsked.has(d));
-  const canAssessFit = Boolean(value.situation?.trim()) && Boolean(value.goal?.trim() || value.blocked_on?.trim());
+  const has = (d: DiscoveryDimension) => Boolean(value[d]?.trim());
 
-  const stage: DiscoveryState['stage'] = canAssessFit
-    ? 'ready'
-    : known.length === 0
-      ? 'cold'
-      : known.length >= 3
-        ? 'understood'
-        : 'warming';
+  // The progression, in order. Each state is reached by understanding the
+  // previous one — this is what makes a recommendation earned rather than
+  // inserted, and it is why the offer waits for the outcome rather than
+  // firing as soon as a problem appears.
+  const stage: DiscoveryState['stage'] = !has('situation')
+    ? 'question'
+    : !has('diagnosed_problem')
+      ? 'situation'
+      : !has('goal')
+        ? 'problem'
+        : 'outcome';
+
+  // Only at 'outcome' is there enough to name the gap honestly and recommend:
+  // where they are, what is really wrong, and where they want to get to.
+  const canAssessFit = has('situation') && has('diagnosed_problem') && has('goal');
 
   const lines = [
     'WHAT YOU KNEW ABOUT THEM BEFORE OPENING THIS EMAIL — and what you did not.',
@@ -138,23 +175,46 @@ export function buildDiscoveryState(p: ProspectContext): DiscoveryState {
     '',
     ...(canAssessFit
       ? [
-          '  Offer fit: STOP GATHERING. You already know where they are, and what they want or what is in',
-          '  their way. That is enough to judge honestly, so decide in THIS email rather than asking for',
-          '  one more detail — another question here reads as though you were never really listening.',
-          '  If an offer genuinely fits, recommend it now, using the whole picture above and not just their',
-          '  latest message. If none fits, simply help and say nothing about buying — but do not stall.',
-          '  Describing what an offer does without naming and recommending it is the worst outcome of all:',
-          '  they get the pitch with no way to act on it.',
+          '  YOU CAN NOW NAME THE GAP AND RECOMMEND. You know where they are, what is actually wrong, and',
+          '  where they want to get to. That is everything a recommendation needs.',
+          '',
+          '  Make the gap explicit before the offer: what you have shown them takes them this far, and the',
+          '  thing they are missing is bigger than one email. Then recommend, framed as RECOGNITION rather',
+          '  than a pitch — "not because you need more information, you already know the basics, but because',
+          '  you are piecing the process together yourself, and that is what this is built to do".',
+          '  That reason lands. "Buy my course" does not.',
         ]
-      : [
-          `  Offer fit: as of before this email you did not yet know ${missing.includes('situation') ? 'what their situation is' : missing.includes('blocked_on') ? 'what is actually stopping them' : 'what they are trying to achieve'}.`,
-          `  Gaps worth asking about: ${askable.join(', ')}. Pick ONE — the most decisive, not the easiest.`,
-          '  If their new message tells you, you can assess fit NOW — do not ask another question just',
-          '  because this block was written before you read it. Otherwise, find out rather than guessing.',
-        ]),
+      : stage === 'question'
+        ? [
+            '  STATE: QUESTION. You do not yet know who they are. Help them properly, then ask ONE easy,',
+            '  diagnostic question that materially changes your advice.',
+          ]
+        : stage === 'situation'
+          ? [
+              '  STATE: SITUATION. You know their context but not what is actually going wrong. Diagnose it.',
+              '  Use what they told you to narrow it down, and if you still cannot tell, ask the one question',
+              '  that would separate the likely causes.',
+            ]
+          : [
+              '  STATE: PROBLEM. You have identified the real bottleneck. Give them something genuinely useful',
+              '  about it, then find out where they actually want to end up — the destination is what makes any',
+              '  recommendation meaningful, and without it you are guessing at what they would even value.',
+            ]),
+    ...(canAssessFit || !askable.length
+      ? []
+      : [`  Gaps worth asking about: ${askable.join(', ')}. Pick ONE — the most decisive, not the easiest.`]),
   ];
 
   if (p.priorExchanges > 0) lines.push('', `  This is exchange number ${p.priorExchanges + 1} with this person.`);
+  if (p.alreadyPitched) {
+    lines.push(
+      '',
+      '  YOU HAVE ALREADY RECOMMENDED AN OFFER TO THIS PERSON. Do not pitch again unless they ask about it',
+      '  themselves. They heard you. Repeating it turns a recommendation into nagging, and the link is',
+      '  already sitting in their inbox. Keep helping — if they come back, that is interest, and the most',
+      '  useful thing you can do is be useful.',
+    );
+  }
   if (p.askedDimensions.length) {
     lines.push(
       '',
@@ -290,6 +350,13 @@ export function buildReplyInstructions(params: {
       '     A pitch that could be pasted into a reply to anyone, unchanged, is not specific enough — rewrite it.',
       '  3. Read like one person recommending something to another person, in 1-3 sentences. Not a headline,',
       '     not bullet points, not the offer\'s own marketing copy restated.',
+      '  4. Do NOT restate what `body` already said. The two are joined into one email, so summarising their',
+      '     situation in both makes the reader read it twice — which has happened. `body` names the gap;',
+      '     `offer_pitch` says what closes it and why that follows.',
+      '',
+      'ONLY set `routed_offer_name` when `next_action` is `offer`. Recommending is itself the action, not',
+      'something bolted onto a different one — a genuinely useful answer followed immediately by a pitch',
+      'reads as though the help was bait.',
       '',
       'Leave `offer_pitch` out entirely when you are not routing. Do not use it to restate the offer exists',
       'in passing — either it earns a real, specific pitch, or it is not mentioned at all.',
@@ -316,58 +383,35 @@ export function buildReplyInstructions(params: {
 
   s.push(
     [
-      'PROGRESSIVELY UNDERSTAND THEM — this is the job, not an add-on to answering.',
+      'AFTER EVERY MESSAGE, ASK YOURSELF ONE THING: what is the most useful thing I can do next?',
       '',
-      'You are not a search box handling isolated queries. You are one person getting to know another',
-      'across a conversation. Someone should move, over a few emails, from "I have a random question" to',
-      '"actually, here is my situation" to "yes, that is exactly my problem" — and only then to "what',
-      'would you recommend?". That last step is where an offer becomes welcome instead of intrusive.',
+      'NOT "what should I ask?" — asking is only one of the options, and defaulting to it every time is',
+      'what makes something feel like a funnel instead of a person. Set `next_action` to whichever of',
+      'these genuinely serves them most right now:',
       '',
-      'THE QUESTION YOU ASK YOURSELF, every single time, before writing `discovery_question`:',
-      '  "Given everything this person has told me so far, what is the smallest, easiest question I can',
-      '   ask that reveals the next piece of information I actually need?"',
+      '  answer   — they asked something and the useful move is simply a good answer. Nothing else needed.',
+      '  diagnose — you need one piece of information to know what is actually wrong. Ask for it.',
+      '  teach    — they are stuck on something specific and an example or a concrete walkthrough helps',
+      '             more than any question would.',
+      '  win      — they have revealed a gap they did not know they had. Give them something they can act',
+      '             on immediately that visibly works. THIS IS THE MOST UNDERUSED MOVE. When someone says',
+      '             "I have not really tracked that", the answer is not another question — it is "that is',
+      '             the first thing I would fix, here is exactly what to track". That moment, where they',
+      '             think this thing genuinely knows its stuff, is what makes any later recommendation',
+      '             believable. Trust is the thing being built; the sale is downstream of it.',
+      '  offer    — you understand their situation, their real problem and what they want. Recommend.',
       '',
-      'Work it out from the known/missing block below, in this order:',
-      '  1. Look at what is MISSING. Those are your candidates — never re-ask something already known.',
-      '  2. Of those, pick the ONE whose answer would most change what you would tell them or whether an',
-      '     offer fits. Not the easiest to ask. The most decisive.',
-      '  3. Ask the smallest, most natural question that gets it. One thing only.',
+      'DIAGNOSTIC QUESTIONS, when you do ask, are not interrogation. A good one is easy to answer and',
+      'changes what you would tell them. "Are you getting traffic but no sales, or struggling to get',
+      'traffic at all?" is excellent — a beginner can answer it instantly and the two answers lead',
+      'somewhere completely different. "What are your business goals?" is worthless: hard to answer,',
+      'and nothing you would say depends on it. Either/or questions are often the easiest to answer.',
       '',
-      'Every question must do at least one of these, or it is not worth asking:',
-      '  - clarify their situation',
-      '  - expose what the actual problem is',
-      '  - reveal what they have already tried',
-      '  - reveal what they actually want',
-      '  - reveal what is stopping them',
-      '  - settle whether a specific offer fits them',
+      'ONE question, only when it is the most useful move. Never two. Never a question stacked onto a',
+      'recommendation. And never one you have asked before — see the spent list below.',
       '',
-      'IT MUST NOT FEEL LIKE AN INTAKE FORM. This is the difference between the product working and the',
-      'product being deleted. So:',
-      '  - It reads as a natural continuation of what they just said, not a new topic you introduced.',
-      '  - Curiosity about THEM, never data collection. "How many clients are you juggling right now?"',
-      '    is a person asking. "What is your current client volume?" is a form.',
-      '  - One question. Never two, never a question with sub-parts.',
-      '  - Never ask something whose answer would not change your advice.',
-      '  - Never re-ask something they already answered, or that you asked and they chose not to answer.',
-      '  - Sometimes the most natural move is an observation that invites them to correct it — "sounds',
-      '    like the bottleneck is volume rather than quality?" — which is often easier to answer than a',
-      '    direct question. That counts, and it works well when the gap is what is stopping them.',
-      '',
-      'Match where you are in the conversation:',
-      '  - cold (you know nothing yet) — stay light. One easy, low-effort question. Do not interrogate a',
-      '    stranger who has asked you one thing.',
-      '  - warming / understood — you can go a step deeper, and reference what they already told you so',
-      '    they can tell you are actually listening rather than running a script.',
-      '  - ready (you can assess fit) — stop gathering. You have what you need; either recommend or do not.',
-      '',
-      'Put it in `discovery_question`, not in `body`. Leave it out entirely when:',
-      '  - You are routing to an offer this email (see below — the recommendation stands alone), or',
-      '  - Nothing offered below could apply to someone in their position no matter what you learned, or',
-      '  - You genuinely already know enough, and one more question would just be stalling.',
-      'Set `asked_about` to the dimension name you probed: situation, goal, tried, blocked_on, or objections.',
-      '',
-      'This is discovery, not stalling — never withhold the answer to their real question in order to ask',
-      'yours first. Answer them fully, then ask.',
+      'You are not filling in a form. You are a person who knows this subject well, working out what is',
+      'actually going on and helping. The understanding is what earns the right to recommend anything.',
     ].join('\n'),
   );
 

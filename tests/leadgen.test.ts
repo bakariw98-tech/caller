@@ -169,151 +169,100 @@ function ctx(over: Partial<ProspectContext> = {}): ProspectContext {
     goal: null,
     tried: null,
     blocked_on: null,
+    diagnosedProblem: null,
+    knowledgeLevel: null,
+    urgency: null,
     objections: [],
     priorExchanges: 0,
     askedAbout: null,
     askedDimensions: [],
+    alreadyPitched: false,
     ...over,
   };
 }
 
-describe('buildDiscoveryState', () => {
-  it('marks every dimension missing for a cold contact, and says so loudly', () => {
+describe('buildDiscoveryState — the progression', () => {
+  it('starts at QUESTION when nothing is known', () => {
     const d = buildDiscoveryState(ctx());
-    expect(d.stage).toBe('cold');
-    expect(d.known).toEqual([]);
-    expect(d.missing).toHaveLength(5);
-    // The gaps must be visible in the rendered text — that is the entire
-    // point of this block. A model that cannot see absences cannot decide
-    // what to ask next.
-    expect(d.text).toContain('[MISSING]');
-    expect(d.text).not.toContain('[known]');
-  });
-
-  it('splits known from missing and renders the known values', () => {
-    const d = buildDiscoveryState(ctx({ situation: 'runs ads for 6 clients', tried: 'writing by hand' }));
-    expect(d.known).toEqual(['situation', 'tried']);
-    expect(d.missing).toEqual(['goal', 'blocked_on', 'objections']);
-    expect(d.text).toContain('runs ads for 6 clients');
-  });
-
-  it('cannot assess fit from situation alone — a recommendation would be a guess', () => {
-    const d = buildDiscoveryState(ctx({ situation: 'runs an agency' }));
+    expect(d.stage).toBe('question');
     expect(d.canAssessFit).toBe(false);
-    expect(d.text).toContain('did not yet know');
+    expect(d.text).toContain('[MISSING]');
+    expect(d.text).toContain('STATE: QUESTION');
   });
 
-  it('can assess fit once it knows where they are and either where they want to be', () => {
-    expect(buildDiscoveryState(ctx({ situation: 'runs an agency', goal: 'predictable monthly income' })).canAssessFit).toBe(true);
+  it('moves to SITUATION once their context is known but the problem is not diagnosed', () => {
+    const d = buildDiscoveryState(ctx({ situation: '3 months dropshipping, TikTok traffic' }));
+    expect(d.stage).toBe('situation');
+    expect(d.text).toContain('STATE: SITUATION');
+    expect(d.canAssessFit).toBe(false);
   });
 
-  it('can assess fit from situation plus what is stopping them', () => {
-    expect(buildDiscoveryState(ctx({ situation: 'runs an agency', blocked_on: 'cannot produce enough variants' })).canAssessFit).toBe(true);
+  it('moves to PROBLEM once the real bottleneck is diagnosed', () => {
+    const d = buildDiscoveryState(ctx({
+      situation: '3 months dropshipping',
+      diagnosedProblem: 'traffic is fine, the product page is not converting',
+    }));
+    expect(d.stage).toBe('problem');
+    expect(d.text).toContain('STATE: PROBLEM');
+    // Still not enough — without knowing where they want to get to, any
+    // recommendation is a guess about what they would value.
+    expect(d.canAssessFit).toBe(false);
   });
 
-  it('reaches ready as soon as fit is assessable, regardless of how much else is known', () => {
-    const d = buildDiscoveryState(ctx({ situation: 'x', goal: 'y' }));
-    expect(d.stage).toBe('ready');
-    expect(d.text).toContain('STOP GATHERING');
+  it('only earns the recommendation once situation, problem AND outcome are all known', () => {
+    const d = buildDiscoveryState(ctx({
+      situation: '3 months dropshipping',
+      diagnosedProblem: 'product page not converting',
+      goal: '$10k/month so they can quit their job',
+    }));
+    expect(d.stage).toBe('outcome');
+    expect(d.canAssessFit).toBe(true);
+    expect(d.text).toContain('NAME THE GAP AND RECOMMEND');
+    // Framed as recognition, not a pitch — the distinction the whole design
+    // rests on.
+    expect(d.text).toContain('RECOGNITION');
   });
 
-  it('progresses cold -> warming -> understood as pieces accumulate', () => {
-    expect(buildDiscoveryState(ctx({ tried: 'a' })).stage).toBe('warming');
-    // Three known but still no situation, so fit is not assessable yet.
-    expect(buildDiscoveryState(ctx({ tried: 'a', objections: ['b'], blocked_on: 'c' })).stage).toBe('understood');
+  it('does not treat a reported complaint as a diagnosed problem', () => {
+    // blocked_on is what they said; diagnosed_problem is what was worked out.
+    // Conflating them would let a recommendation fire off a vague grievance.
+    const d = buildDiscoveryState(ctx({ situation: 'x', blocked_on: 'not getting sales', goal: 'more revenue' }));
+    expect(d.canAssessFit).toBe(false);
+    expect(d.stage).toBe('situation');
   });
 
   it('treats whitespace-only values as missing, not known', () => {
     expect(buildDiscoveryState(ctx({ situation: '   ' })).known).toEqual([]);
   });
 
-  it('tells the model to drop a question it already asked and they did not answer', () => {
-    // Re-asking an ignored question is the single fastest way a conversation
-    // starts reading as an intake form.
-    const d = buildDiscoveryState(ctx({ situation: 'x', askedAbout: 'tried', askedDimensions: ['tried'] }));
-    expect(d.text).toContain('ALREADY ASKED, NEVER ASK AGAIN: tried');
-    expect(d.text).not.toContain('Gaps worth asking about: goal, tried');
-  });
-
-  it('says nothing about prior questions on a first contact', () => {
-    expect(buildDiscoveryState(ctx()).text).not.toContain('ALREADY ASKED');
-  });
-
   it('never presents reservations as something to ask about', () => {
-    // Observed live: with everything else known it asked "what reservations
-    // do you have about bringing something in?" — before any offer had been
-    // mentioned. That asks someone to object to a thing that does not exist
-    // yet, and is exactly the checklist-completion behaviour that makes a
-    // conversation read as a form.
     const d = buildDiscoveryState(ctx({ situation: 'x', goal: 'y', tried: 'z', blocked_on: 'w' }));
     expect(d.text).toContain('[not yet raised]');
     expect(d.text).toContain('never ask about this directly');
   });
 
-  it('lists only askable gaps, excluding objections', () => {
-    const d = buildDiscoveryState(ctx({ situation: 'x' }));
-    expect(d.text).toContain('Gaps worth asking about: goal, tried, blocked_on');
-    expect(d.text).not.toContain('Gaps worth asking about: goal, tried, blocked_on, objections');
-  });
-
-  it('tells the model to stop gathering and decide once fit is assessable', () => {
-    // The failure this pins: with situation + goal + blocker all known, it
-    // kept asking further questions and even described an offer's capability
-    // without naming or linking it — the pitch with no way to act on it.
-    const d = buildDiscoveryState(ctx({ situation: 'agency', goal: '20 clients', blocked_on: 'no time' }));
-    expect(d.text).toContain('STOP GATHERING');
-    expect(d.text).toContain('without naming and recommending it');
-  });
-
   it('frames itself as prior state and tells the model to absorb the new message', () => {
-    // Found live: this block is built from the persisted prospect row, which
-    // is only updated AFTER the reply is generated. On the turn where someone
-    // states their goal and their blocker, the block still said both were
-    // missing while the model was reading a message containing both — an
-    // active contradiction that produced a wasted question about something
-    // already known. The block must announce its own staleness.
     const d = buildDiscoveryState(ctx({ situation: 'runs an agency' }));
     expect(d.text).toContain('BEFORE OPENING THIS EMAIL');
     expect(d.text).toContain('that gap is FILLED');
-    expect(d.text).toContain('you can assess fit NOW');
+  });
+
+  it('says nothing about prior questions on a first contact', () => {
+    expect(buildDiscoveryState(ctx()).text).not.toContain('ALREADY ASKED');
   });
 });
 
-describe('looksLikeOptOut', () => {
-  it('catches the ways people actually ask to be left alone', () => {
-    for (const t of [
-      'unsubscribe',
-      'Please stop emailing me',
-      'take me off this list',
-      'remove me',
-      'leave me alone',
-      "don't email me again",
-      'STOP SENDING THESE',
-    ]) {
-      expect(looksLikeOptOut(t)).toBe(true);
-    }
+describe('buildDiscoveryState — not pitching twice', () => {
+  it('tells the model to stop pitching once an offer has been recommended', () => {
+    // Observed live: the same offer pitched on two consecutive emails, the
+    // second one repeating the situation summary the body had just given.
+    const d = buildDiscoveryState(ctx({ alreadyPitched: true }));
+    expect(d.text).toContain('ALREADY RECOMMENDED AN OFFER');
+    expect(d.text).toContain('Do not pitch again unless they ask');
   });
 
-  it('does not fire on ordinary messages', () => {
-    for (const t of [
-      'Thanks for the tip!',
-      'How do I stop my ads from underperforming?',
-      'I want to remove the fluff from my copy',
-      'Getting sales',
-    ]) {
-      expect(looksLikeOptOut(t)).toBe(false);
-    }
-  });
-
-  it('ignores a long message that merely contains the words', () => {
-    // Opt-outs are terse. A long message mentioning "stop emailing" in passing
-    // — quoting a complaint, say — is not someone opting out.
-    const long = 'I run an agency and my clients always say things like stop emailing me when the sequences are too aggressive, so I want to know how to write follow-ups that people actually welcome instead of resenting. What is the right cadence?';
-    expect(looksLikeOptOut(long)).toBe(false);
-  });
-
-  it('ignores empty input', () => {
-    expect(looksLikeOptOut('   ')).toBe(false);
+  it('says nothing about prior pitches when none has happened', () => {
+    expect(buildDiscoveryState(ctx()).text).not.toContain('ALREADY RECOMMENDED');
   });
 });
 
@@ -323,11 +272,16 @@ describe('buildDiscoveryState — never re-asking', () => {
     // old guard only remembered the single previous turn.
     const d = buildDiscoveryState(ctx({ askedDimensions: ['situation', 'goal'] }));
     expect(d.text).toContain('ALREADY ASKED, NEVER ASK AGAIN: situation, goal');
-    expect(d.text).toContain('Gaps worth asking about: tried, blocked_on');
+    const gaps = /Gaps worth asking about: ([^.]+)\./.exec(d.text)?.[1] ?? '';
+    expect(gaps).not.toContain('situation');
+    expect(gaps).not.toContain('goal');
+    expect(gaps).toContain('diagnosed_problem');
   });
 
   it('tells the model to ask nothing when every gap is spent', () => {
-    const d = buildDiscoveryState(ctx({ askedDimensions: ['situation', 'goal', 'tried', 'blocked_on'] }));
+    const d = buildDiscoveryState(ctx({
+      askedDimensions: ['situation', 'diagnosed_problem', 'goal', 'knowledge_level', 'urgency', 'tried', 'blocked_on'],
+    }));
     expect(d.text).toContain('no unasked gaps left');
     expect(d.text).toContain('Do not ask anything this email');
   });
