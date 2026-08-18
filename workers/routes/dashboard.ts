@@ -36,7 +36,10 @@ const DENIED = /* html */ `<!doctype html><html><head><meta charset="utf-8"><tit
 <code>/dashboard/&lt;creator-id&gt;?key=&lt;admin-token&gt;</code>. Use the full link you were given and bookmark it.</p>
 </body></html>`;
 
-const PAGE = /* html */ `<!doctype html>
+// Exported for tests/dashboard.test.ts, which parses the embedded <script>
+// with new Function() to catch a JS syntax error before it reaches a
+// browser — see that test's comment for why this matters here specifically.
+export const PAGE = /* html */ `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -267,7 +270,7 @@ const PAGE = /* html */ `<!doctype html>
       if (!d.conflicts || !d.conflicts.length) { box.innerHTML = ''; return; }
       box.innerHTML = '<p class="note" style="margin-top:1rem"><b>' + d.conflicts.length +
         ' place' + (d.conflicts.length === 1 ? '' : 's') +
-        ' where two videos say close to the same thing, close enough that it wasn\'t confident they fully agree.</b> ' +
+        ' where two videos say close to the same thing, close enough that agreement was not confirmed.</b> ' +
         'Nothing was merged or guessed at — this could be a real difference in advice, or just different wording ' +
         'for the same point. Only you know which.</p>';
       d.conflicts.forEach(function (pair) {
