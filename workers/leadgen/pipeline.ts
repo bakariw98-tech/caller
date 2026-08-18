@@ -155,7 +155,11 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
     const objections = [...new Set([...safeArr(prospect.objections_json), ...s.objections])];
     const topics = [...new Set([...safeArr(prospect.topics_json), ...s.topics])];
     const exchanges = (prospect.exchanges ?? 0) + 1;
-    const hitBoundary = prospect.hit_boundary || s.hit_boundary ? 1 : 0;
+    // Stored as one column for scoring purposes, even though the model
+    // reports two distinct reasons — a content gap versus a self-disclosed
+    // fit with an offer. Both mean the same thing to a creator glancing at
+    // the prospects list: this person is worth their attention.
+    const hitBoundary = prospect.hit_boundary || s.hit_boundary || s.qualifies_for_offer ? 1 : 0;
 
     const score = scoreProspect({
       exchanges,

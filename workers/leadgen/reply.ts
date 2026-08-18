@@ -172,6 +172,8 @@ export interface QualificationSignals {
   objections: string[];
   topics: string[];
   hit_boundary: boolean;
+  /** Distinct from hit_boundary: they described themselves as who an offer is for, independent of any content gap. */
+  qualifies_for_offer: boolean;
   routed_offer_name: string | null;
   answered_from_material: boolean;
 }
@@ -194,7 +196,13 @@ const replyJson = {
     topics: { type: 'array', items: { type: 'string' }, description: 'Topics they asked about.' },
     hit_boundary: {
       type: 'boolean',
-      description: 'True only if their need genuinely ran past a boundary marked in the material.',
+      description: 'True only if their need genuinely ran past a content boundary marked in the material.',
+    },
+    qualifies_for_offer: {
+      type: 'boolean',
+      description:
+        'True only if they described their own situation in a way that specifically and concretely matches an ' +
+        "offer's who_for, independent of any content boundary. False for a vague or partial resemblance.",
     },
     routed_offer_name: {
       type: 'string',
@@ -205,7 +213,7 @@ const replyJson = {
       description: "True if you answered from the creator's material; false if you had to say it wasn't covered.",
     },
   },
-  required: ['body', 'objections', 'topics', 'hit_boundary', 'answered_from_material'],
+  required: ['body', 'objections', 'topics', 'hit_boundary', 'qualifies_for_offer', 'answered_from_material'],
   additionalProperties: false,
 } as const;
 
@@ -297,6 +305,7 @@ export async function generateReply(params: {
     objections: string[];
     topics: string[];
     hit_boundary: boolean;
+    qualifies_for_offer: boolean;
     routed_offer_name?: string;
     answered_from_material: boolean;
   }>(params.apiBase, params.apiKey, {
@@ -325,6 +334,7 @@ export async function generateReply(params: {
       objections: value.objections ?? [],
       topics: value.topics ?? [],
       hit_boundary: Boolean(value.hit_boundary),
+      qualifies_for_offer: Boolean(value.qualifies_for_offer),
       routed_offer_name: value.routed_offer_name ?? null,
       answered_from_material: Boolean(value.answered_from_material),
     },
