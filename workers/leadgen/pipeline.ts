@@ -10,6 +10,7 @@ import {
   type GeneratedReply,
 } from './reply.js';
 import { embedQuery, type AiBinding } from './embeddings.js';
+import { stripQuotedReply } from '../email/gmail.js';
 
 export class CreatorNotFoundError extends Error {
   constructor(creatorId: string) {
@@ -47,6 +48,19 @@ export interface PipelineResult {
   usage: GeneratedReply['usage'];
 }
 
+/**
+ * Empty string -> null before persisting.
+ *
+ * The merge below relies on COALESCE, which only replaces NULL. An empty
+ * string stored once therefore blocks the column forever: observed live with
+ * `goal = ''`, which meant a prospect who later stated a real goal could
+ * never have it recorded, and canAssessFit stayed false permanently.
+ */
+function nullIfBlank(v: string | null | undefined): string | null {
+  const t = v?.trim();
+  return t ? t : null;
+}
+
 function safeArr(json: unknown): string[] {
   if (typeof json !== 'string') return [];
   try {
@@ -71,7 +85,12 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
   const db = params.db;
   const creatorId = params.creatorId;
   const email = params.fromEmail.trim().toLowerCase();
-  const question = params.text.trim();
+  // Strip the quoted previous email here, at the shared chokepoint, rather
+  // than in the Gmail client — otherwise /api/leadgen/simulate (the test
+  // harness and creator preview) would see raw quoted text while production
+  // saw stripped text, which defeats the entire reason this pipeline was
+  // extracted: both callers must run the identical path.
+  const question = stripQuotedReply(params.text).trim();
   const persist = params.persist !== false;
 
   const creator = await db.prepare('SELECT * FROM creators WHERE id = ?').get<Creator>(creatorId);
@@ -184,10 +203,10 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
           WHERE id = ?`,
       )
       .run(
-        s.situation,
-        s.goal,
-        s.tried,
-        s.blocked_on,
+        nullIfBlank(s.situation),
+        nullIfBlank(s.goal),
+        nullIfBlank(s.tried),
+        nullIfBlank(s.blocked_on),
         JSON.stringify(objections),
         JSON.stringify(topics),
         exchanges,
@@ -199,7 +218,7 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
         // records what the LAST reply asked, so it must clear when a reply
         // asks nothing. Carrying a stale value forward would suppress a
         // legitimate question on a later turn.
-        s.asked_about,
+        nullIfBlank(s.asked_about),
         prospect.id,
       );
 

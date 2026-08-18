@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildRawMessage, listNewInboxMessages, HistoryGapError } from '../workers/email/gmail.js';
+import { buildRawMessage, listNewInboxMessages, stripQuotedReply, HistoryGapError } from '../workers/email/gmail.js';
 
 function decodeRaw(raw: string): string {
   const b64 = raw.replace(/-/g, '+').replace(/_/g, '/');
@@ -214,5 +214,52 @@ describe('listNewInboxMessages', () => {
   it('throws HistoryGapError on a 404 rather than silently returning nothing', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
     await expect(listNewInboxMessages('token', 'too-old')).rejects.toBeInstanceOf(HistoryGapError);
+  });
+});
+
+describe('stripQuotedReply', () => {
+  it('keeps only the new content from a Gmail-style reply', () => {
+    // The exact shape that broke live conversations: a 1137-character stored
+    // "message" whose real content was one word, the rest being our own
+    // previous reply quoted back. The model read that as the prospect's words
+    // and re-answered itself three exchanges running.
+    const raw = [
+      'Interesting.',
+      '',
+      'On Tue, Aug 18, 2026 at 8:05 AM Bakari <bakariw98@gmail.com> wrote:',
+      '',
+      '> The fastest way to raise conversion on your content is to stop writing',
+      '> from a blank page and instead do forum foraging.',
+      '>',
+      '> What does your typical prospect say their biggest frustration is right now?',
+      '>',
+    ].join('\n');
+    expect(stripQuotedReply(raw)).toBe('Interesting.');
+  });
+
+  it('leaves a message with no quoted section untouched', () => {
+    const raw = 'How do I price my first paid edit? I have no idea what to charge.';
+    expect(stripQuotedReply(raw)).toBe(raw);
+  });
+
+  it('handles Outlook original-message separators', () => {
+    const raw = 'My actual question here.\n\n-----Original Message-----\nFrom: someone\nOld text.';
+    expect(stripQuotedReply(raw)).toBe('My actual question here.');
+  });
+
+  it('handles a bare quoted block with no attribution line', () => {
+    expect(stripQuotedReply('New question.\n\n> old quoted line\n> more quoted')).toBe('New question.');
+  });
+
+  it('returns the original rather than nothing when the whole body looks quoted', () => {
+    // Fail-safe: blanking a real message is far worse than leaving quoted
+    // text in, so a strip that would empty the message is refused.
+    const raw = '> everything here is quoted\n> nothing new at all';
+    expect(stripQuotedReply(raw)).toBe(raw.trim());
+  });
+
+  it('does not truncate a message that merely mentions writing', () => {
+    const raw = 'I wrote: a headline yesterday and it flopped. Any advice on hooks?';
+    expect(stripQuotedReply(raw)).toBe(raw);
   });
 });

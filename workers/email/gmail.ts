@@ -156,6 +156,45 @@ function extractBody(payload: GmailPart): string {
   return '';
 }
 
+/**
+ * Removes the quoted previous email from a reply.
+ *
+ * Mail clients quote the whole thread on reply, so the raw body of a message
+ * whose actual content is one word can run to a thousand characters of our
+ * own previous reply. Feeding that through unchanged was actively breaking
+ * conversations, observed live: the model read its own prior answer as
+ * though the prospect had written it, re-answered the same question, and
+ * re-asked the same follow-up three exchanges running. It also poisons
+ * retrieval (the quote dominates the embedding) and signal extraction
+ * (their "situation" gets scraped out of our own text).
+ *
+ * Truncates at the earliest recognised quote marker. Fail-safe by design: if
+ * stripping would leave nothing, the original is returned rather than an
+ * empty question, since a false positive that silently blanks a real message
+ * is far worse than leaving some quoted text in.
+ */
+export function stripQuotedReply(text: string): string {
+  const markers: RegExp[] = [
+    // Gmail / Apple Mail attribution line, which can wrap across lines.
+    /^[ \t]*On\b[\s\S]{0,300}?\bwrote:[ \t]*$/im,
+    /^[ \t]*-{2,}\s*Original Message\s*-{2,}/im,
+    /^[ \t]*_{10,}[ \t]*$/m,
+    /^[ \t]*From:[ \t]*\S+@\S+/im,
+    /^[ \t]*Sent from my /im,
+    // Any quoted line. Last resort — the markers above are more precise.
+    /^[ \t]*>/m,
+  ];
+
+  let cut = text.length;
+  for (const re of markers) {
+    const m = re.exec(text);
+    if (m && m.index < cut) cut = m.index;
+  }
+
+  const stripped = text.slice(0, cut).trim();
+  return stripped.length > 0 ? stripped : text.trim();
+}
+
 /** Fetches one message's headers and body in the shape the pipeline needs. */
 export async function getMessage(accessToken: string, gmailId: string): Promise<InboundMessage> {
   const res = await gmailFetch(accessToken, `/messages/${gmailId}?format=full`);
@@ -180,6 +219,8 @@ export async function getMessage(accessToken: string, gmailId: string): Promise<
     subject: headerValue(headers, 'Subject'),
     messageId: headerValue(headers, 'Message-Id') ?? headerValue(headers, 'Message-ID'),
     references: headerValue(headers, 'References'),
+    // Raw. Quote stripping happens in runLeadgenPipeline so the Gmail path
+    // and /api/leadgen/simulate go through the identical transformation.
     text: extractBody(json.payload),
     labelIds: json.labelIds ?? [],
   };
