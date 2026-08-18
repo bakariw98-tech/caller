@@ -478,3 +478,13 @@ CREATE INDEX IF NOT EXISTS idx_messages_source ON prospect_messages(creator_id, 
 -- reply — observed live: the same inbound message answered twice, seconds
 -- apart, with two different AI-generated replies to a real person.
 ALTER TABLE email_connections ADD COLUMN locked_until INTEGER;
+
+-- The sixth discovery dimension. situation/tried/blocked_on/objections cover
+-- where someone is; `goal` is where they want to be, and the gap between the
+-- two is what an offer actually closes — without it a pitch can only describe
+-- a problem, never a destination. `last_asked_about` records which dimension
+-- the previous reply probed, so an unanswered question is never re-asked:
+-- repeating yourself is the single fastest way a conversation starts feeling
+-- like an intake form.
+ALTER TABLE prospects ADD COLUMN goal TEXT;
+ALTER TABLE prospects ADD COLUMN last_asked_about TEXT;

@@ -141,10 +141,12 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
     prospect: {
       name: prospect?.name ?? params.fromName ?? null,
       situation: prospect?.situation ?? null,
+      goal: prospect?.goal ?? null,
       tried: prospect?.tried ?? null,
       blocked_on: prospect?.blocked_on ?? null,
       objections: safeArr(prospect?.objections_json),
       priorExchanges: prospect?.exchanges ?? 0,
+      askedAbout: prospect?.last_asked_about ?? null,
     },
     history,
     // Signed so a click cannot be forged into another creator's attribution.
@@ -169,18 +171,21 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
       clicked_offer: prospect.clicked_offer,
       situation: s.situation ?? prospect.situation,
       blocked_on: s.blocked_on ?? prospect.blocked_on,
+      goal: s.goal ?? prospect.goal,
     });
 
     await db
       .prepare(
         `UPDATE prospects
-            SET situation = COALESCE(?, situation), tried = COALESCE(?, tried),
+            SET situation = COALESCE(?, situation), goal = COALESCE(?, goal), tried = COALESCE(?, tried),
                 blocked_on = COALESCE(?, blocked_on), objections_json = ?, topics_json = ?,
-                exchanges = ?, hit_boundary = ?, score = ?, last_seen_at = ?, name = COALESCE(name, ?)
+                exchanges = ?, hit_boundary = ?, score = ?, last_seen_at = ?, name = COALESCE(name, ?),
+                last_asked_about = ?
           WHERE id = ?`,
       )
       .run(
         s.situation,
+        s.goal,
         s.tried,
         s.blocked_on,
         JSON.stringify(objections),
@@ -190,6 +195,11 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
         score,
         now(),
         params.fromName ?? null,
+        // Deliberately overwritten each turn rather than COALESCEd: this
+        // records what the LAST reply asked, so it must clear when a reply
+        // asks nothing. Carrying a stale value forward would suppress a
+        // legitimate question on a later turn.
+        s.asked_about,
         prospect.id,
       );
 

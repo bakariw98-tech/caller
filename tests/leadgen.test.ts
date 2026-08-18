@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { selectKnowledge, scoreProspect, buildRoutedBody, type KnowledgeRow } from '../workers/leadgen/reply.js';
+import { selectKnowledge, scoreProspect, buildEmailBody, type KnowledgeRow } from '../workers/leadgen/reply.js';
+import { buildDiscoveryState, type ProspectContext } from '../workers/leadgen/prompt.js';
 
 function item(overrides: Partial<KnowledgeRow> & { id: string; problem: string }): KnowledgeRow {
   return {
@@ -101,39 +102,178 @@ describe('scoreProspect', () => {
   });
 });
 
-describe('buildRoutedBody', () => {
+describe('buildEmailBody', () => {
   const LINK = 'https://example.test/r/offer_1.prospect_1.abcd';
+
+  it('places the discovery question after the answer when not routing', () => {
+    const out = buildEmailBody({
+      body: 'Get the footage before you quote.',
+      discoveryQuestion: 'How many of these are you turning around a week right now?',
+    });
+    expect(out).toBe('Get the footage before you quote.\n\nHow many of these are you turning around a week right now?');
+    expect(out).not.toContain('http');
+  });
 
   it('assembles help, then the specific pitch, then the link — never a bare append', () => {
     // The bug this replaced: the offer mention lived inside free-form body
     // text the model could shortchange, so a routed reply sometimes ended in
-    // a URL with nothing persuasive around it. offer_pitch is now a separate
-    // required-when-routing field, guaranteeing a real bridge sentence exists.
-    const out = buildRoutedBody(
-      'The free material stops there.',
-      'The Retainer Playbook',
-      'Since you mentioned five one-off clients turning into repeat work, the Playbook covers exactly the scope-fencing conversation you need next.',
-      LINK,
-    );
+    // a URL with nothing persuasive around it.
+    const out = buildEmailBody({
+      body: 'The free material stops there.',
+      offerName: 'The Retainer Playbook',
+      offerPitch: 'Since you mentioned five one-off clients turning into repeat work, the Playbook covers the scope-fencing conversation you need next.',
+      link: LINK,
+    });
     expect(out).toContain('five one-off clients');
-    expect(out).toContain(LINK);
-    // The link must not be the very next thing after the help text with
-    // nothing between — that reads as a bare drop, which is the complaint
-    // this function exists to fix.
-    const linkIndex = out.indexOf(LINK);
-    expect(out.slice(0, linkIndex)).toContain('scope-fencing');
+    // The link must be last, and must have real framing before it.
+    expect(out.endsWith(LINK)).toBe(true);
+    expect(out.slice(0, out.indexOf(LINK))).toContain('scope-fencing');
   });
 
-  it('still includes a real sentence, not a naked link, when the model routes without writing a pitch', () => {
-    const out = buildRoutedBody('Body text.', 'Offer', undefined, LINK);
-    expect(out).toContain(LINK);
+  it('still frames the link when the model routes without writing a pitch', () => {
+    const out = buildEmailBody({ body: 'Body text.', offerName: 'Offer', link: LINK });
     expect(out).toContain('Offer');
-    // Must not degrade to "Offer: <link>" with no framing at all.
-    expect(out).not.toMatch(/^Body text\.\n\nOffer: /);
+    expect(out.endsWith(LINK)).toBe(true);
+    // Must not degrade to a naked URL with nothing explaining it.
+    expect(out).not.toBe(`Body text.\n\n${LINK}`);
   });
 
-  it('does not double-space when the body already ends in a newline', () => {
-    const out = buildRoutedBody('Body text.\n\n', 'Offer', 'A real pitch sentence.', LINK);
-    expect(out).toBe(`Body text.\n\nA real pitch sentence.\n\n${LINK}`);
+  it('keeps the question with the help and the link last when the model emits both', () => {
+    // The prompt says to drop the question when routing, but model output is
+    // never silently discarded — this pins the fallback ordering.
+    const out = buildEmailBody({
+      body: 'Answer.',
+      discoveryQuestion: 'Which of those is costing you most?',
+      offerName: 'Offer',
+      offerPitch: 'Given the volume you described, Offer handles it.',
+      link: LINK,
+    });
+    expect(out.indexOf('costing you most')).toBeLessThan(out.indexOf('Given the volume'));
+    expect(out.endsWith(LINK)).toBe(true);
+  });
+
+  it('does not leave double blank lines when the body already ends in newlines', () => {
+    const out = buildEmailBody({ body: 'Body text.\n\n', discoveryQuestion: 'A question?' });
+    expect(out).toBe('Body text.\n\nA question?');
+  });
+
+  it('returns the body untouched when there is nothing to append', () => {
+    expect(buildEmailBody({ body: 'Just an answer.' })).toBe('Just an answer.');
+  });
+});
+
+function ctx(over: Partial<ProspectContext> = {}): ProspectContext {
+  return {
+    name: null,
+    situation: null,
+    goal: null,
+    tried: null,
+    blocked_on: null,
+    objections: [],
+    priorExchanges: 0,
+    askedAbout: null,
+    ...over,
+  };
+}
+
+describe('buildDiscoveryState', () => {
+  it('marks every dimension missing for a cold contact, and says so loudly', () => {
+    const d = buildDiscoveryState(ctx());
+    expect(d.stage).toBe('cold');
+    expect(d.known).toEqual([]);
+    expect(d.missing).toHaveLength(5);
+    // The gaps must be visible in the rendered text — that is the entire
+    // point of this block. A model that cannot see absences cannot decide
+    // what to ask next.
+    expect(d.text).toContain('[MISSING]');
+    expect(d.text).not.toContain('[known]');
+  });
+
+  it('splits known from missing and renders the known values', () => {
+    const d = buildDiscoveryState(ctx({ situation: 'runs ads for 6 clients', tried: 'writing by hand' }));
+    expect(d.known).toEqual(['situation', 'tried']);
+    expect(d.missing).toEqual(['goal', 'blocked_on', 'objections']);
+    expect(d.text).toContain('runs ads for 6 clients');
+  });
+
+  it('cannot assess fit from situation alone — a recommendation would be a guess', () => {
+    const d = buildDiscoveryState(ctx({ situation: 'runs an agency' }));
+    expect(d.canAssessFit).toBe(false);
+    expect(d.text).toContain('did not yet know');
+  });
+
+  it('can assess fit once it knows where they are and either where they want to be', () => {
+    expect(buildDiscoveryState(ctx({ situation: 'runs an agency', goal: 'predictable monthly income' })).canAssessFit).toBe(true);
+  });
+
+  it('can assess fit from situation plus what is stopping them', () => {
+    expect(buildDiscoveryState(ctx({ situation: 'runs an agency', blocked_on: 'cannot produce enough variants' })).canAssessFit).toBe(true);
+  });
+
+  it('reaches ready as soon as fit is assessable, regardless of how much else is known', () => {
+    const d = buildDiscoveryState(ctx({ situation: 'x', goal: 'y' }));
+    expect(d.stage).toBe('ready');
+    expect(d.text).toContain('STOP GATHERING');
+  });
+
+  it('progresses cold -> warming -> understood as pieces accumulate', () => {
+    expect(buildDiscoveryState(ctx({ tried: 'a' })).stage).toBe('warming');
+    // Three known but still no situation, so fit is not assessable yet.
+    expect(buildDiscoveryState(ctx({ tried: 'a', objections: ['b'], blocked_on: 'c' })).stage).toBe('understood');
+  });
+
+  it('treats whitespace-only values as missing, not known', () => {
+    expect(buildDiscoveryState(ctx({ situation: '   ' })).known).toEqual([]);
+  });
+
+  it('tells the model to drop a question it already asked and they did not answer', () => {
+    // Re-asking an ignored question is the single fastest way a conversation
+    // starts reading as an intake form.
+    const d = buildDiscoveryState(ctx({ situation: 'x', askedAbout: 'tried' }));
+    expect(d.text).toContain('already asked about "tried"');
+    expect(d.text).toContain('Move to a different gap');
+  });
+
+  it('says nothing about prior questions on a first contact', () => {
+    expect(buildDiscoveryState(ctx()).text).not.toContain('already asked about');
+  });
+
+  it('never presents reservations as something to ask about', () => {
+    // Observed live: with everything else known it asked "what reservations
+    // do you have about bringing something in?" — before any offer had been
+    // mentioned. That asks someone to object to a thing that does not exist
+    // yet, and is exactly the checklist-completion behaviour that makes a
+    // conversation read as a form.
+    const d = buildDiscoveryState(ctx({ situation: 'x', goal: 'y', tried: 'z', blocked_on: 'w' }));
+    expect(d.text).toContain('[not yet raised]');
+    expect(d.text).toContain('never ask about this directly');
+  });
+
+  it('lists only askable gaps, excluding objections', () => {
+    const d = buildDiscoveryState(ctx({ situation: 'x' }));
+    expect(d.text).toContain('Gaps worth asking about: goal, tried, blocked_on');
+    expect(d.text).not.toContain('Gaps worth asking about: goal, tried, blocked_on, objections');
+  });
+
+  it('tells the model to stop gathering and decide once fit is assessable', () => {
+    // The failure this pins: with situation + goal + blocker all known, it
+    // kept asking further questions and even described an offer's capability
+    // without naming or linking it — the pitch with no way to act on it.
+    const d = buildDiscoveryState(ctx({ situation: 'agency', goal: '20 clients', blocked_on: 'no time' }));
+    expect(d.text).toContain('STOP GATHERING');
+    expect(d.text).toContain('without naming and recommending it');
+  });
+
+  it('frames itself as prior state and tells the model to absorb the new message', () => {
+    // Found live: this block is built from the persisted prospect row, which
+    // is only updated AFTER the reply is generated. On the turn where someone
+    // states their goal and their blocker, the block still said both were
+    // missing while the model was reading a message containing both — an
+    // active contradiction that produced a wasted question about something
+    // already known. The block must announce its own staleness.
+    const d = buildDiscoveryState(ctx({ situation: 'runs an agency' }));
+    expect(d.text).toContain('BEFORE OPENING THIS EMAIL');
+    expect(d.text).toContain('that gap is FILLED');
+    expect(d.text).toContain('you can assess fit NOW');
   });
 });

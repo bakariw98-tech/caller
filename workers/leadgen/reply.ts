@@ -167,8 +167,14 @@ export function selectKnowledgeHybrid(
 
 export interface QualificationSignals {
   situation: string | null;
+  /** What they want — the destination half of the gap an offer closes. */
+  goal: string | null;
   tried: string | null;
   blocked_on: string | null;
+  /** The question asked this turn, if any. Kept separate from body so it cannot be dropped or made generic. */
+  discovery_question: string | null;
+  /** Which dimension that question probed, so the next turn never re-asks it. */
+  asked_about: string | null;
   objections: string[];
   topics: string[];
   hit_boundary: boolean;
@@ -190,8 +196,21 @@ const replyJson = {
   properties: {
     body: { type: 'string', description: 'The email body. No subject line, no signature.' },
     situation: { type: 'string', description: "The person's situation, if they described one." },
+    goal: { type: 'string', description: 'What they actually want — the outcome they are after, if stated.' },
     tried: { type: 'string', description: 'What they have already tried, if stated.' },
     blocked_on: { type: 'string', description: 'What is actually in their way, if clear.' },
+    discovery_question: {
+      type: 'string',
+      description:
+        'The ONE question that reveals the next thing you need to know about them. Omit entirely when routing ' +
+        'to an offer, when nothing offered could apply to them, or when you already know enough.',
+    },
+    asked_about: {
+      type: 'string',
+      description:
+        'Which dimension discovery_question probes: situation, goal, tried, blocked_on, or objections. ' +
+        'Omit when there is no discovery_question.',
+    },
     objections: { type: 'array', items: { type: 'string' }, description: 'Doubts or reservations they raised.' },
     topics: { type: 'array', items: { type: 'string' }, description: 'Topics they asked about.' },
     hit_boundary: {
@@ -235,27 +254,58 @@ const replyJson = {
  * needing a separate qualification step.
  */
 /**
- * Assembles the final email when routing: the help, then the pitch, then the
- * link — never a bare URL appended to whatever the model happened to write.
+ * Assembles the final email from its structured parts:
+ * `body` -> `discovery_question` -> `offer_pitch` -> link.
  *
- * `offer_pitch` is a separate structured field rather than something folded
- * into free-form `body` for a concrete reason: when the offer mention lived
- * inside the main prose, it was inconsistent — sometimes a real, specific
- * bridge to what the person said, sometimes nothing more than the model
- * trailing off with a URL on its own line, because writing the answer and
- * managing the pitch and remembering the link were all one undifferentiated
- * task competing for the same attention. Splitting it into its own required
- * generation target is what makes the pitch reliable rather than occasional.
+ * The pitch and the question are separate structured fields rather than
+ * things folded into free-form `body` for the same hard-won reason: when the
+ * offer mention lived inside the main prose it was inconsistent — sometimes a
+ * real bridge, sometimes the model trailing off with a bare URL — because
+ * writing the answer, managing the pitch, and remembering the link were one
+ * undifferentiated task competing for the same attention. Splitting each into
+ * its own generation target is what makes them reliable rather than
+ * occasional, and assembling here means the ordering and spacing are
+ * guaranteed by code instead of hoped for.
  *
- * Falls back to a plain, honest line if the model routed but skipped the
- * pitch anyway — still worse than a real one, but never a naked link with
- * nothing around it, and never silently drops the link the way a bare
- * append-if-missing check previously could.
+ * In practice the question and the pitch are mutually exclusive — the prompt
+ * says to drop the question when routing, since a recommendation competing
+ * with a fresh question weakens both. This still handles the case where the
+ * model emits both rather than silently discarding output it produced: the
+ * question sits with the help, and the pitch plus link close the email.
  */
-export function buildRoutedBody(body: string, offerName: string, offerPitch: string | undefined, link: string): string {
-  const pitch = offerPitch?.trim();
-  const closer = pitch || `You can find ${offerName} here:`;
-  return `${body.trimEnd()}\n\n${closer}\n\n${link}`;
+export function buildEmailBody(parts: {
+  body: string;
+  discoveryQuestion?: string | null;
+  offerName?: string | null;
+  offerPitch?: string | null;
+  link?: string | null;
+}): string {
+  let body = parts.body.trimEnd();
+  const question = parts.discoveryQuestion?.trim();
+
+  // Strip the question from the body if the model wrote it in both places.
+  // Observed live: the same sentence appearing twice in one reply, because
+  // `discovery_question` is a separate field but nothing stopped the model
+  // also ending `body` with it. Only a trailing occurrence is removed — the
+  // question belongs at the end, and cutting a mid-body match could gut a
+  // sentence that legitimately reads the same way.
+  if (question && body.endsWith(question)) {
+    body = body.slice(0, body.length - question.length).trimEnd();
+  }
+
+  const blocks = [body];
+  if (question) blocks.push(question);
+
+  if (parts.link) {
+    const pitch = parts.offerPitch?.trim();
+    // Falls back to a plain, honest line if the model routed but skipped the
+    // pitch — still worse than a real one, but never a naked URL with nothing
+    // around it explaining why it is there.
+    blocks.push(pitch || `You can find ${parts.offerName ?? 'it'} here:`);
+    blocks.push(parts.link);
+  }
+
+  return blocks.join('\n\n');
 }
 
 export async function generateReply(params: {
@@ -312,8 +362,11 @@ export async function generateReply(params: {
   const { value, usage } = await chatCompletionJson<{
     body: string;
     situation?: string;
+    goal?: string;
     tried?: string;
     blocked_on?: string;
+    discovery_question?: string;
+    asked_about?: string;
     objections: string[];
     topics: string[];
     hit_boundary: boolean;
@@ -334,16 +387,23 @@ export async function generateReply(params: {
     : null;
 
   const routedOffer = routedOfferId ? params.offers.find((o) => o.id === routedOfferId) : undefined;
-  const body = routedOffer
-    ? buildRoutedBody(value.body, routedOffer.name, value.offer_pitch, params.offerLink(routedOffer.id))
-    : value.body;
+  const body = buildEmailBody({
+    body: value.body,
+    discoveryQuestion: value.discovery_question,
+    offerName: routedOffer?.name,
+    offerPitch: value.offer_pitch,
+    link: routedOffer ? params.offerLink(routedOffer.id) : null,
+  });
 
   return {
     body,
     signals: {
       situation: value.situation ?? null,
+      goal: value.goal ?? null,
       tried: value.tried ?? null,
       blocked_on: value.blocked_on ?? null,
+      discovery_question: value.discovery_question?.trim() || null,
+      asked_about: value.asked_about?.trim() || null,
       objections: value.objections ?? [],
       topics: value.topics ?? [],
       hit_boundary: Boolean(value.hit_boundary),
@@ -385,10 +445,14 @@ export function scoreProspect(p: {
   clicked_offer: number | boolean;
   situation: string | null;
   blocked_on: string | null;
+  goal?: string | null;
 }): number {
   let score = 0;
   score += Math.min(p.exchanges, 5) * 8;
   if (p.situation) score += 10;
+  // Someone who has told you what they are actually after is further along
+  // than someone who has only described where they are.
+  if (p.goal) score += 10;
   if (p.blocked_on) score += 15;
   if (p.hit_boundary) score += 25;
   if (p.clicked_offer) score += 30;

@@ -21,10 +21,125 @@ export interface OfferForReply {
 export interface ProspectContext {
   name: string | null;
   situation: string | null;
+  /** What they want — the destination. The gap between this and `situation` is what an offer closes. */
+  goal: string | null;
   tried: string | null;
   blocked_on: string | null;
   objections: string[];
   priorExchanges: number;
+  /** Which dimension the previous reply asked about, so an unanswered question is never repeated. */
+  askedAbout: string | null;
+}
+
+/** The discovery dimensions, in the order they are shown to the model. */
+export const DISCOVERY_DIMENSIONS = ['situation', 'goal', 'tried', 'blocked_on', 'objections'] as const;
+export type DiscoveryDimension = (typeof DISCOVERY_DIMENSIONS)[number];
+
+const DIMENSION_LABELS: Record<DiscoveryDimension, string> = {
+  situation: 'Their situation — what they do, what stage they are at',
+  goal: 'What they actually want — the outcome they are after',
+  tried: 'What they have already tried',
+  blocked_on: 'What is actually stopping them',
+  objections: 'Reservations or doubts they hold',
+};
+
+export interface DiscoveryState {
+  known: DiscoveryDimension[];
+  missing: DiscoveryDimension[];
+  /**
+   * Whether enough is known to judge an offer honestly. Requires knowing
+   * where they are AND either where they want to be or what is in the way —
+   * a recommendation without one of those is a guess dressed as advice.
+   */
+  canAssessFit: boolean;
+  stage: 'cold' | 'warming' | 'understood' | 'ready';
+  /** The rendered block handed to the model. */
+  text: string;
+}
+
+/**
+ * Turns what is stored about a prospect into an explicit known/missing map.
+ *
+ * This exists because the previous prompt showed only the fields that were
+ * populated. A model looking at that cannot answer "what is the next thing I
+ * need to find out" — the gaps are invisible, so questions came out arbitrary
+ * rather than aimed. Rendering the absences as loudly as the facts is what
+ * turns the next question into a decision instead of a guess.
+ *
+ * Pure and exported so the stage/gap logic is testable on its own rather than
+ * buried inside a template string.
+ */
+export function buildDiscoveryState(p: ProspectContext): DiscoveryState {
+  const value: Record<DiscoveryDimension, string | null> = {
+    situation: p.situation,
+    goal: p.goal,
+    tried: p.tried,
+    blocked_on: p.blocked_on,
+    objections: p.objections.length ? p.objections.join('; ') : null,
+  };
+
+  const known = DISCOVERY_DIMENSIONS.filter((d) => Boolean(value[d]?.trim()));
+  const missing = DISCOVERY_DIMENSIONS.filter((d) => !value[d]?.trim());
+  // Reservations are observed, never solicited. Asking "what doubts do you
+  // have?" before any offer has been mentioned is asking someone to object to
+  // something that does not exist yet — observed live, and it is exactly the
+  // checklist-completion behaviour that makes a conversation feel like a form.
+  const askable = missing.filter((d) => d !== 'objections');
+  const canAssessFit = Boolean(value.situation?.trim()) && Boolean(value.goal?.trim() || value.blocked_on?.trim());
+
+  const stage: DiscoveryState['stage'] = canAssessFit
+    ? 'ready'
+    : known.length === 0
+      ? 'cold'
+      : known.length >= 3
+        ? 'understood'
+        : 'warming';
+
+  const lines = [
+    'WHAT YOU KNEW ABOUT THEM BEFORE OPENING THIS EMAIL — and what you did not.',
+    '',
+    'IMPORTANT: this is the state as of their PREVIOUS messages. It cannot see the email you are',
+    'replying to right now. If their new message fills one of the gaps below, that gap is FILLED —',
+    'treat it as known, do not ask about it, and re-judge offer fit accordingly. A gap marked [MISSING]',
+    'here that they have just answered is not missing any more.',
+    '',
+    'The remaining gaps are the point of this block. They are what your next question is for.',
+    '',
+    ...DISCOVERY_DIMENSIONS.map((d) =>
+      value[d]?.trim()
+        ? `  [known]   ${DIMENSION_LABELS[d]}: ${value[d]}`
+        : d === 'objections'
+          ? `  [not yet raised] ${DIMENSION_LABELS[d]} — never ask about this directly; notice it if they say it`
+          : `  [MISSING] ${DIMENSION_LABELS[d]}`,
+    ),
+    '',
+    ...(canAssessFit
+      ? [
+          '  Offer fit: STOP GATHERING. You already know where they are, and what they want or what is in',
+          '  their way. That is enough to judge honestly, so decide in THIS email rather than asking for',
+          '  one more detail — another question here reads as though you were never really listening.',
+          '  If an offer genuinely fits, recommend it now, using the whole picture above and not just their',
+          '  latest message. If none fits, simply help and say nothing about buying — but do not stall.',
+          '  Describing what an offer does without naming and recommending it is the worst outcome of all:',
+          '  they get the pitch with no way to act on it.',
+        ]
+      : [
+          `  Offer fit: as of before this email you did not yet know ${missing.includes('situation') ? 'what their situation is' : missing.includes('blocked_on') ? 'what is actually stopping them' : 'what they are trying to achieve'}.`,
+          `  Gaps worth asking about: ${askable.join(', ')}. Pick ONE — the most decisive, not the easiest.`,
+          '  If their new message tells you, you can assess fit NOW — do not ask another question just',
+          '  because this block was written before you read it. Otherwise, find out rather than guessing.',
+        ]),
+  ];
+
+  if (p.priorExchanges > 0) lines.push('', `  This is exchange number ${p.priorExchanges + 1} with this person.`);
+  if (p.askedAbout) {
+    lines.push(
+      `  Your last reply already asked about "${p.askedAbout}". If they did not answer it, let it go —`,
+      '  asking twice is what makes this feel like a form. Move to a different gap.',
+    );
+  }
+
+  return { known, missing, canAssessFit, stage, text: lines.join('\n') };
 }
 
 function list(json: string): string[] {
@@ -137,6 +252,16 @@ export function buildReplyInstructions(params: {
       'Leave `offer_pitch` out entirely when you are not routing. Do not use it to restate the offer exists',
       'in passing — either it earns a real, specific pitch, or it is not mentioned at all.',
       '',
+      'WHEN YOU ROUTE, THE RECOMMENDATION STANDS ALONE — omit `discovery_question` in that email. You have',
+      'spent the conversation earning the right to say this; splitting the reader\'s attention between a',
+      'recommendation and a fresh question weakens both, and the question reads as though you were not',
+      'actually finished listening. Recommend, and stop.',
+      '',
+      'If you are routing after several exchanges, the pitch should reflect the WHOLE picture you have',
+      'built — what they want, what they tried, what is stopping them — not merely their last message.',
+      'That accumulated understanding is exactly what makes "based on what you have told me" true rather',
+      'than a phrase.',
+      '',
       'Never manufacture a limitation to create an opening.',
       'Never claim an offer covers something not listed for it.',
       'Never route because the conversation has gone on a while — message count is not a reason, and',
@@ -149,26 +274,58 @@ export function buildReplyInstructions(params: {
 
   s.push(
     [
-      'FIND OUT IF THEY ARE A FIT — do not just answer and stop. This is the default, not an exception.',
-      'You are not a search box. Every reply is also a chance to learn one more real thing about who this',
-      'person is and what they are actually dealing with — treat that as normal, not as something you only',
-      'do when it feels clearly warranted.',
+      'PROGRESSIVELY UNDERSTAND THEM — this is the job, not an add-on to answering.',
       '',
-      'After answering, ask ONE specific question that moves you toward knowing whether an offer below',
-      'fits them, UNLESS at least one of these is true:',
-      '  - You already know enough about their situation to route with a genuinely specific pitch, or',
-      '  - Nothing offered below could plausibly apply to anyone in their position no matter what you',
-      '    learned, or',
-      '  - They already answered this exact kind of question earlier in the thread.',
-      'Those are the only reasons to skip it — "the question was self-contained" is not one of them.',
-      'Almost every real question sits inside a bigger situation; ask about that situation, not about the',
-      'narrow thing they happened to ask.',
+      'You are not a search box handling isolated queries. You are one person getting to know another',
+      'across a conversation. Someone should move, over a few emails, from "I have a random question" to',
+      '"actually, here is my situation" to "yes, that is exactly my problem" — and only then to "what',
+      'would you recommend?". That last step is where an offer becomes welcome instead of intrusive.',
       '',
-      'Tie the question to what they actually said, never a generic "tell me more about your business".',
-      'One good, specific question beats a form, and it also beats zero questions.',
+      'THE QUESTION YOU ASK YOURSELF, every single time, before writing `discovery_question`:',
+      '  "Given everything this person has told me so far, what is the smallest, easiest question I can',
+      '   ask that reveals the next piece of information I actually need?"',
       '',
-      'This is discovery, not stalling — do not withhold the answer to their actual question in order to',
-      'ask your question first. Answer, then ask, in that order, in the same email.',
+      'Work it out from the known/missing block below, in this order:',
+      '  1. Look at what is MISSING. Those are your candidates — never re-ask something already known.',
+      '  2. Of those, pick the ONE whose answer would most change what you would tell them or whether an',
+      '     offer fits. Not the easiest to ask. The most decisive.',
+      '  3. Ask the smallest, most natural question that gets it. One thing only.',
+      '',
+      'Every question must do at least one of these, or it is not worth asking:',
+      '  - clarify their situation',
+      '  - expose what the actual problem is',
+      '  - reveal what they have already tried',
+      '  - reveal what they actually want',
+      '  - reveal what is stopping them',
+      '  - settle whether a specific offer fits them',
+      '',
+      'IT MUST NOT FEEL LIKE AN INTAKE FORM. This is the difference between the product working and the',
+      'product being deleted. So:',
+      '  - It reads as a natural continuation of what they just said, not a new topic you introduced.',
+      '  - Curiosity about THEM, never data collection. "How many clients are you juggling right now?"',
+      '    is a person asking. "What is your current client volume?" is a form.',
+      '  - One question. Never two, never a question with sub-parts.',
+      '  - Never ask something whose answer would not change your advice.',
+      '  - Never re-ask something they already answered, or that you asked and they chose not to answer.',
+      '  - Sometimes the most natural move is an observation that invites them to correct it — "sounds',
+      '    like the bottleneck is volume rather than quality?" — which is often easier to answer than a',
+      '    direct question. That counts, and it works well when the gap is what is stopping them.',
+      '',
+      'Match where you are in the conversation:',
+      '  - cold (you know nothing yet) — stay light. One easy, low-effort question. Do not interrogate a',
+      '    stranger who has asked you one thing.',
+      '  - warming / understood — you can go a step deeper, and reference what they already told you so',
+      '    they can tell you are actually listening rather than running a script.',
+      '  - ready (you can assess fit) — stop gathering. You have what you need; either recommend or do not.',
+      '',
+      'Put it in `discovery_question`, not in `body`. Leave it out entirely when:',
+      '  - You are routing to an offer this email (see below — the recommendation stands alone), or',
+      '  - Nothing offered below could apply to someone in their position no matter what you learned, or',
+      '  - You genuinely already know enough, and one more question would just be stalling.',
+      'Set `asked_about` to the dimension name you probed: situation, goal, tried, blocked_on, or objections.',
+      '',
+      'This is discovery, not stalling — never withhold the answer to their real question in order to ask',
+      'yours first. Answer them fully, then ask.',
     ].join('\n'),
   );
 
@@ -229,22 +386,17 @@ export function buildReplyInstructions(params: {
     );
   }
 
-  const p = prospect;
-  if (p.priorExchanges > 0 || p.situation || p.blocked_on) {
-    s.push(
-      [
-        'WHAT YOU ALREADY KNOW ABOUT THEM — do not make them repeat it:',
-        p.name ? `Name: ${p.name}` : '',
-        p.situation ? `Situation: ${p.situation}` : '',
-        p.tried ? `Already tried: ${p.tried}` : '',
-        p.blocked_on ? `Stuck on: ${p.blocked_on}` : '',
-        p.objections.length ? `Reservations raised: ${p.objections.join('; ')}` : '',
-        p.priorExchanges > 0 ? `This is exchange number ${p.priorExchanges + 1}.` : '',
-      ]
-        .filter(Boolean)
-        .join('\n'),
-    );
-  }
+  const discovery = buildDiscoveryState(prospect);
+  s.push(
+    [
+      prospect.name ? `Their name: ${prospect.name}` : '',
+      discovery.text,
+      '',
+      'Never make them repeat something already marked [known] above.',
+    ]
+      .filter(Boolean)
+      .join('\n'),
+  );
 
   s.push(
     [
