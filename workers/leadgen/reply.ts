@@ -23,6 +23,8 @@ export interface OfferRow {
   covers: string | null;
   price_text: string | null;
   url: string | null;
+  /** A free resource (a video, guide, template) rather than something they pay for. */
+  is_free?: number | boolean;
 }
 
 const STOPWORDS = new Set([
@@ -177,7 +179,7 @@ export type MessageType =
   | 'opt_out'
   | 'other';
 
-export type NextAction = 'answer' | 'diagnose' | 'teach' | 'win' | 'offer';
+export type NextAction = 'answer' | 'diagnose' | 'teach' | 'win' | 'resource' | 'offer';
 
 export interface QualificationSignals {
   /** What the inbound message actually is. Drives how the reply is shaped. */
@@ -210,6 +212,8 @@ export interface QualificationSignals {
 
 export interface GeneratedReply {
   body: string;
+  /** True when what was shared is a free resource rather than a paid offer. */
+  sharedFreeResource: boolean;
   signals: QualificationSignals;
   routedOfferId: string | null;
   usage: { promptTokens: number; completionTokens: number; costUsd: number };
@@ -243,7 +247,7 @@ const replyJson = {
     // gets written, instead of labelling it afterwards.
     next_action: {
       type: 'string',
-      enum: ['answer', 'diagnose', 'teach', 'win', 'offer'],
+      enum: ['answer', 'diagnose', 'teach', 'win', 'resource', 'offer'],
       description: 'The most useful thing you can do for this person right now. Decide before writing the body.',
     },
     body: { type: 'string', description: 'The email body. No subject line, no signature.' },
@@ -348,6 +352,8 @@ export function buildEmailBody(parts: {
   offerName?: string | null;
   offerPitch?: string | null;
   link?: string | null;
+  /** Free resources read better woven into the body, so they get no added framing line. */
+  isFreeResource?: boolean;
 }): string {
   let body = parts.body.trimEnd();
   const question = parts.discoveryQuestion?.trim();
@@ -367,10 +373,17 @@ export function buildEmailBody(parts: {
 
   if (parts.link) {
     const pitch = parts.offerPitch?.trim();
-    // Falls back to a plain, honest line if the model routed but skipped the
-    // pitch — still worse than a real one, but never a naked URL with nothing
-    // around it explaining why it is there.
-    blocks.push(pitch || `You can find ${parts.offerName ?? 'it'} here:`);
+    if (pitch) {
+      blocks.push(pitch);
+    } else if (!parts.isFreeResource) {
+      // A PAID recommendation always needs framing — a bare URL with nothing
+      // explaining why it is there is worthless. A FREE resource does not:
+      // the model naturally mentions it in the body ("I have a short video
+      // that walks through this"), and adding a second description underneath
+      // made the reader read the same thing twice. Working with that instinct
+      // beats instructing against it.
+      blocks.push(`You can find ${parts.offerName ?? 'it'} here:`);
+    }
     blocks.push(parts.link);
   }
 
@@ -397,6 +410,7 @@ export async function generateReply(params: {
     covers: o.covers,
     price_text: o.price_text,
     link: params.offerLink(o.id),
+    isFree: Boolean(o.is_free),
   }));
 
   const offerNameById = new Map(params.offers.map((o) => [o.name.toLowerCase(), o.id]));
@@ -457,19 +471,25 @@ export async function generateReply(params: {
     schema: replyJson as unknown as Record<string, unknown>,
   });
 
-  // Routing is gated on the chosen action, deterministically.
+  // Gating differs by what is being pointed at, deterministically.
   //
-  // Observed live: the model picked `win` — give them something genuinely
-  // useful they can act on immediately — wrote an excellent one, and then
-  // pitched in the same email anyway. That undercuts the exact thing the win
-  // move exists to build. Trust first, recommendation later, and never both
-  // in one breath. Only `offer` may route, and that is enforced here rather
-  // than asked for, because a prompt cannot reliably hold a line the model
-  // has a standing incentive to cross.
-  const routedOfferId =
-    value.next_action === 'offer' && value.routed_offer_name
-      ? (offerNameById.get(value.routed_offer_name.trim().toLowerCase()) ?? null)
-      : null;
+  // A PAID offer may only go out when the chosen action is `offer`. Observed
+  // live: the model picked `win` — give them something useful they can act on
+  // immediately — wrote an excellent one, and then pitched in the same email
+  // anyway, undercutting the exact trust that move exists to build. A prompt
+  // cannot reliably hold a line the model has a standing incentive to cross,
+  // so it is enforced here.
+  //
+  // A FREE resource has no such gate. Sending someone a relevant video costs
+  // them nothing and asks nothing, so withholding it until they have been
+  // qualified would make the system worse at the only job that earns trust in
+  // the first place. Relevance is the whole bar.
+  const namedOfferId = value.routed_offer_name
+    ? (offerNameById.get(value.routed_offer_name.trim().toLowerCase()) ?? null)
+    : null;
+  const namedOffer = namedOfferId ? params.offers.find((o) => o.id === namedOfferId) : undefined;
+  const isFreeResource = Boolean(namedOffer?.is_free);
+  const routedOfferId = namedOffer && (isFreeResource || value.next_action === 'offer') ? namedOfferId : null;
 
   const routedOffer = routedOfferId ? params.offers.find((o) => o.id === routedOfferId) : undefined;
   const body = buildEmailBody({
@@ -478,10 +498,12 @@ export async function generateReply(params: {
     offerName: routedOffer?.name,
     offerPitch: value.offer_pitch,
     link: routedOffer ? params.offerLink(routedOffer.id) : null,
+    isFreeResource,
   });
 
   return {
     body,
+    sharedFreeResource: Boolean(routedOfferId) && isFreeResource,
     signals: {
       message_type: value.message_type ?? 'other',
       next_action: value.next_action ?? 'answer',
@@ -562,6 +584,6 @@ export async function loadKnowledge(db: SqlDb, creatorId: string): Promise<Knowl
 
 export async function loadOffers(db: SqlDb, creatorId: string): Promise<OfferRow[]> {
   return db
-    .prepare('SELECT id, name, who_for, covers, price_text, url FROM offers WHERE creator_id = ? AND active = 1')
+    .prepare('SELECT id, name, who_for, covers, price_text, url, is_free FROM offers WHERE creator_id = ? AND active = 1')
     .all<OfferRow>(creatorId);
 }

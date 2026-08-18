@@ -231,7 +231,10 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
         nullIfBlank(s.knowledge_level),
         nullIfBlank(s.urgency),
         s.requested_offer ? 1 : 0,
-        generated.routedOfferId ? 1 : 0,
+        // Only a PAID recommendation counts as "already pitched". Sending a
+        // free video is not a pitch, and letting it set this flag would
+        // permanently suppress the real recommendation later.
+        generated.routedOfferId && !generated.sharedFreeResource ? 1 : 0,
         JSON.stringify(objections),
         JSON.stringify(topics),
         exchanges,

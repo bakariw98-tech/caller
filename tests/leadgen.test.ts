@@ -157,6 +157,25 @@ describe('buildEmailBody', () => {
     expect(out).toBe('Body text.\n\nA question?');
   });
 
+  it('appends a free resource link bare, since the body already introduces it', () => {
+    // Observed live: the model mentions the video naturally in the body, and
+    // an added "You can find X here:" line underneath described it a second
+    // time. A paid recommendation still needs framing; a free one does not.
+    const out = buildEmailBody({
+      body: 'I have a short screen recording that walks through exactly this.',
+      link: LINK,
+      offerName: 'The walkthrough',
+      isFreeResource: true,
+    });
+    expect(out).toBe(`I have a short screen recording that walks through exactly this.\n\n${LINK}`);
+    expect(out).not.toContain('You can find');
+  });
+
+  it('still frames a PAID link even with no pitch, since a bare URL explains nothing', () => {
+    const out = buildEmailBody({ body: 'Body.', link: LINK, offerName: 'Kong AI', isFreeResource: false });
+    expect(out).toContain('You can find Kong AI here:');
+  });
+
   it('returns the body untouched when there is nothing to append', () => {
     expect(buildEmailBody({ body: 'Just an answer.' })).toBe('Just an answer.');
   });

@@ -530,3 +530,15 @@ ALTER TABLE prospects ADD COLUMN requested_offer INTEGER NOT NULL DEFAULT 0;
 -- pitched the same offer on consecutive emails, which turns a recommendation
 -- into nagging — the link is already in their inbox.
 ALTER TABLE prospects ADD COLUMN offer_pitched INTEGER NOT NULL DEFAULT 0;
+
+-- Not everything worth pointing someone at costs money. A creator's own video,
+-- guide, template or free tool is often the single most useful thing to send —
+-- and it carries none of the honesty tax a paid recommendation does, because
+-- nobody is being asked for anything.
+--
+-- This is a real distinction rather than a label: a paid offer must be EARNED
+-- (situation, diagnosed problem and desired outcome all understood), whereas a
+-- free resource only has to be RELEVANT. Collapsing the two would either make
+-- the system hoard genuinely helpful links behind a qualification process, or
+-- let paid pitches ride in under the cover of being helpful.
+ALTER TABLE offers ADD COLUMN is_free INTEGER NOT NULL DEFAULT 0;

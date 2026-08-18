@@ -120,11 +120,20 @@ const PAGE = /* html */ `<!doctype html>
 
   <section>
     <h2>Offers</h2>
-    <p class="note">What it points people to, but only when a boundary says the free material genuinely stops.</p>
+    <p class="note">Two kinds. <b>Free</b> things — your videos, guides, tools — get sent any time they'd
+      genuinely help. <b>Paid</b> things are only recommended once it understands their situation, the real
+      problem, and what they want.</p>
     <div id="offers"></div>
     <details>
       <summary style="cursor:pointer;font-size:.88rem;margin-top:.5rem">Add an offer</summary>
-      <label>Name</label><input id="o-name" placeholder="e.g. Kong AI">
+      <label>What is it?</label>
+      <select id="o-free">
+        <option value="0">Something they pay for — a course, coaching, a product</option>
+        <option value="1">Free — one of your videos, a guide, a template, a tool</option>
+      </select>
+      <p class="note" style="margin:.35rem 0 0">Free things get sent whenever they'd genuinely help. Paid ones
+        are only recommended once the coach understands their situation, their real problem, and what they want.</p>
+      <label>Name</label><input id="o-name" placeholder="e.g. Kong AI, or 'How I find winning products'">
       <label>Who it's for</label><input id="o-who" placeholder="who specifically benefits">
       <label>What it covers</label><textarea id="o-covers" style="min-height:4rem" placeholder="be precise — it will never claim more than this"></textarea>
       <label>Price</label><input id="o-price" placeholder="e.g. $390 one-time">
@@ -318,7 +327,9 @@ const PAGE = /* html */ `<!doctype html>
       OFFERS.forEach(function (o) {
         var n = document.createElement('div');
         n.className = 'item';
-        n.innerHTML = '<h3>' + esc(o.name) + (o.price_text ? ' · <span class="note">' + esc(o.price_text) + '</span>' : '') + '</h3>' +
+        n.innerHTML = '<h3>' + esc(o.name) +
+          (o.is_free ? ' <span class="pill on">free</span>' : '') +
+          (o.price_text ? ' · <span class="note">' + esc(o.price_text) + '</span>' : '') + '</h3>' +
           (o.who_for ? '<p><b>For:</b> ' + esc(o.who_for) + '</p>' : '') +
           (o.covers ? '<p><b>Covers:</b> ' + esc(o.covers) + '</p>' : '') +
           (o.url ? '<p><a href="' + esc(o.url) + '" target="_blank" rel="noopener">' + esc(o.url) + '</a></p>' : '') +
@@ -340,6 +351,7 @@ const PAGE = /* html */ `<!doctype html>
     api('/api/creators/' + CID + '/offers', { method: 'POST', body: {
       name: name, who_for: el('o-who').value.trim(), covers: el('o-covers').value.trim(),
       price_text: el('o-price').value.trim(), url: el('o-url').value.trim(),
+      is_free: el('o-free').value === '1',
     }}).then(function () {
       show('st-offer', 'ok', 'Added.');
       ['o-name','o-who','o-covers','o-price','o-url'].forEach(function (i) { el(i).value = ''; });

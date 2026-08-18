@@ -16,6 +16,7 @@ export interface OfferForReply {
   covers: string | null;
   price_text: string | null;
   link: string | null;
+  isFree: boolean;
 }
 
 export interface ProspectContext {
@@ -399,7 +400,11 @@ export function buildReplyInstructions(params: {
       '             the first thing I would fix, here is exactly what to track". That moment, where they',
       '             think this thing genuinely knows its stuff, is what makes any later recommendation',
       '             believable. Trust is the thing being built; the sale is downstream of it.',
-      '  offer    — you understand their situation, their real problem and what they want. Recommend.',
+      '  resource — one of the free things below would genuinely help them right now. Send it. This needs',
+      '             no qualification and no build-up: it costs them nothing, asks nothing, and is simply',
+      '             the useful thing to do. Use it freely and often.',
+      '  offer     — you understand their situation, their real problem and what they want. Recommend the',
+      '             PAID thing. This one has to be earned.',
       '',
       'DIAGNOSTIC QUESTIONS, when you do ask, are not interrogation. A good one is easy to answer and',
       'changes what you would tell them. "Are you getting traffic but no sales, or struggling to get',
@@ -549,16 +554,46 @@ export function buildReplyInstructions(params: {
       : `No material of ${creator.business_name}'s matches this question. Say so honestly and briefly. Do not improvise an answer, and do not pitch.`,
   );
 
-  if (offers.length) {
+  const freeResources = offers.filter((o) => o.isFree);
+  const paidOffers = offers.filter((o) => !o.isFree);
+
+  if (freeResources.length) {
     s.push(
       [
-        'THE OFFERS — facts only. Never claim more than is written here.',
-        ...offers.map(
+        `FREE THINGS YOU CAN SEND — ${creator.business_name}'s own videos, guides and tools.`,
+        '',
+        'These are NOT sales. Nobody is being asked for anything, so none of the discipline around the paid',
+        'offer applies here: no boundary needed, no qualification, no waiting until you understand their',
+        'whole situation. If one of these would genuinely help with what they are dealing with RIGHT NOW,',
+        'send it. Being the person who hands over the useful thing is most of how trust gets built.',
+        '',
+        'Still only when it actually fits. A link that does not match what they asked is noise, and sending',
+        'one to look helpful is the same failure as pitching to look useful. Say in one line what is in it',
+        'and why it helps THEM — never just drop a bare link.',
+        '',
+        ...freeResources.map(
+          (o) =>
+            `- "${o.name}"${o.who_for ? ` — for: ${o.who_for}` : ''}${o.covers ? ` — covers: ${o.covers}` : ''}`,
+        ),
+        '',
+        'Name one in `routed_offer_name` to send it. Mention it naturally in `body` — one line on what is in',
+        'it and why it helps THEM — and leave `offer_pitch` EMPTY. The link is appended on its own beneath',
+        'your text. Writing about it in both places makes the reader read the same thing twice, which has',
+        'happened. Never write a URL yourself.',
+      ].join('\n'),
+    );
+  }
+
+  if (paidOffers.length) {
+    s.push(
+      [
+        'THE PAID OFFERS — facts only. Never claim more than is written here.',
+        ...paidOffers.map(
           (o) =>
             `- "${o.name}"${o.who_for ? ` — for: ${o.who_for}` : ''}${o.covers ? ` — covers: ${o.covers}` : ''}` +
-            `${o.price_text ? ` — ${o.price_text}` : ''}${o.link ? `\n    Link to use if you mention it: ${o.link}` : ''}`,
+            `${o.price_text ? ` — ${o.price_text}` : ''}`,
         ),
-        'Use the exact link given. If you mention an offer without its link, the creator cannot tell it worked.',
+        'The link is attached automatically when you name one — never write a URL yourself.',
       ].join('\n'),
     );
   }

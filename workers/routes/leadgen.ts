@@ -33,8 +33,8 @@ leadgenRoute.post('/api/creators/:id/offers', async (c) => {
   const offerId = id('offer');
   await db
     .prepare(
-      `INSERT INTO offers (id, creator_id, kind, name, who_for, covers, price_text, url, active, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+      `INSERT INTO offers (id, creator_id, kind, name, who_for, covers, price_text, url, is_free, active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
     )
     .run(
       offerId,
@@ -45,6 +45,7 @@ leadgenRoute.post('/api/creators/:id/offers', async (c) => {
       b.covers ? String(b.covers) : null,
       b.price_text ? String(b.price_text) : null,
       b.url ? String(b.url) : null,
+      b.is_free ? 1 : 0,
       now(),
     );
   return c.json({ id: offerId, name }, 201);
