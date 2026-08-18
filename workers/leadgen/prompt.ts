@@ -7,6 +7,8 @@ export interface KnowledgeForReply {
   framework_terms: string[];
   boundary: string | null;
   boundary_offer_name: string | null;
+  /** The video this came from, when it came from one — see workers/youtube/ingest.ts. Null for hand-pasted knowledge. */
+  source_url: string | null;
 }
 
 export interface OfferForReply {
@@ -547,6 +549,12 @@ export function buildReplyInstructions(params: {
               k.boundary
                 ? `    BOUNDARY — the free material stops here: ${k.boundary}${k.boundary_offer_name ? ` (picked up by: ${k.boundary_offer_name})` : ''}`
                 : '    No boundary — the free material covers this fully. Answer it and do not pitch.',
+              // A real video URL, not a link to invent one for. Include it
+              // in the reply ONLY when watching would genuinely serve them
+              // better than reading a paragraph — a visual/demo-heavy
+              // topic — not as decoration on every reply that happens to
+              // touch this material.
+              k.source_url ? `    Video this is from: ${k.source_url}` : '',
             ];
             return parts.filter(Boolean).join('\n');
           }),

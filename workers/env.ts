@@ -24,6 +24,10 @@ export interface Env {
   GOOGLE_OAUTH_CLIENT_ID: string;
   GOOGLE_OAUTH_CLIENT_SECRET: string;
 
+  // transcriptapi.com — YouTube channel enumeration and transcripts for
+  // knowledge-base ingestion. See workers/youtube/.
+  TRANSCRIPT_API_KEY: string;
+
   PLATFORM_MIN_PRICE_PER_MINUTE_CENTS: string;
   PLATFORM_AUDIO_COST_PER_MINUTE_CENTS: string;
   MAX_SESSION_SECONDS: string;

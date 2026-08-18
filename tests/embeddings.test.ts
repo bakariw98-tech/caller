@@ -78,7 +78,7 @@ function similarTo(base: Float32Array, similarity: number): Float32Array {
 describe('selectKnowledgeHybrid', () => {
   const query = vec((i) => Math.cos(i * 0.1));
 
-  function row(id: string, problem: string, v: Float32Array | null): KnowledgeRow {
+  function row(id: string, problem: string, v: Float32Array | null, tier?: number): KnowledgeRow {
     return {
       id,
       problem,
@@ -88,6 +88,7 @@ describe('selectKnowledgeHybrid', () => {
       boundary: null,
       boundary_offer_id: null,
       embedding: v ? encodeVector(v) : null,
+      tier,
     };
   }
 
@@ -122,6 +123,24 @@ describe('selectKnowledgeHybrid', () => {
     ];
     const hits = selectKnowledgeHybrid(rows, 'related thing', query);
     expect(hits[0]?.id).toBe('near');
+  });
+
+  it('breaks a near-tie in favor of the tier-1 (tutorial/framework) item', () => {
+    const rows = [
+      row('tier2', 'closely related thing', similarTo(query, 0.9), 2),
+      row('tier1', 'closely related thing', similarTo(query, 0.9), 1),
+    ];
+    const hits = selectKnowledgeHybrid(rows, 'related thing', query);
+    expect(hits[0]?.id).toBe('tier1');
+  });
+
+  it('does not let the tier-1 boost override a genuinely stronger semantic match', () => {
+    const rows = [
+      row('tier1_weak', 'loosely related thing', similarTo(query, 0.55), 1),
+      row('tier2_strong', 'closely related thing', similarTo(query, 0.99), 2),
+    ];
+    const hits = selectKnowledgeHybrid(rows, 'related thing', query);
+    expect(hits[0]?.id).toBe('tier2_strong');
   });
 
   it('falls back to keyword scoring when there is no query vector', () => {

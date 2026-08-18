@@ -14,6 +14,10 @@ export interface KnowledgeRow {
   boundary_offer_id: string | null;
   /** base64 Float32Array, null until the item has been indexed. */
   embedding?: string | null;
+  /** The video this came from, when it came from one. Null for hand-pasted knowledge. */
+  source_url?: string | null;
+  /** 1 = tutorial/framework signal, 2 = everything else, from tierVideo() at ingestion. Defaults to 2 for hand-pasted knowledge, which was never tiered. */
+  tier?: number;
 }
 
 export interface OfferRow {
@@ -34,7 +38,11 @@ const STOPWORDS = new Set([
   'would','really','some','than','then','only','also','very','much','need','want','know','think','make',
 ]);
 
-function tokenize(text: string): string[] {
+// Exported for dedupe.ts, which needs the identical tokenizer (same
+// stopword list, same normalisation) to compare guidance text for the
+// cross-batch dedup check — two divergent tokenizers would make that
+// comparison meaningless.
+export function tokenize(text: string): string[] {
   return text
     .toLowerCase()
     .split(/[^a-z0-9']+/)
@@ -117,6 +125,17 @@ const SEMANTIC_WEIGHT = 0.75;
 const KEYWORD_WEIGHT = 0.25;
 
 /**
+ * Modest multiplier for tier-1 knowledge (tutorial/framework videos, see
+ * workers/youtube/tier.ts) in the final ranking. Deliberately small — this
+ * only breaks near-ties in a tier-1 item's favor, e.g. core methodology
+ * outranking an offhand mention in a case-study video on an otherwise
+ * similar match. It must not be large enough to pull a genuinely worse
+ * semantic match above a genuinely better one; the floor and blend above
+ * already decide relevance, this only nudges ordering within it.
+ */
+const TIER1_BOOST = 1.1;
+
+/**
  * Hybrid retrieval: semantic similarity blended with keyword overlap.
  *
  * Not pure semantic, deliberately. Embeddings understand paraphrase, which is
@@ -150,7 +169,9 @@ export function selectKnowledgeHybrid(
     const vec = row.embedding ? decodeVector(row.embedding) : null;
     const semantic = vec ? cosineSimilarity(queryVector, vec) : 0;
     const keyword = bestKeyword > 0 ? (kw.get(row.id) ?? 0) / bestKeyword : 0;
-    return { row, semantic, score: semantic * SEMANTIC_WEIGHT + keyword * KEYWORD_WEIGHT };
+    const blended = semantic * SEMANTIC_WEIGHT + keyword * KEYWORD_WEIGHT;
+    const score = row.tier === 1 ? blended * TIER1_BOOST : blended;
+    return { row, semantic, score };
   });
 
   // An item clears the bar on its own semantic merit, or by being a literal
@@ -424,6 +445,7 @@ export async function generateReply(params: {
     boundary_offer_name: k.boundary_offer_id
       ? (params.offers.find((o) => o.id === k.boundary_offer_id)?.name ?? null)
       : null,
+    source_url: k.source_url ?? null,
   }));
 
   const system = buildReplyInstructions({
@@ -576,7 +598,7 @@ export function scoreProspect(p: {
 export async function loadKnowledge(db: SqlDb, creatorId: string): Promise<KnowledgeRow[]> {
   return db
     .prepare(
-      `SELECT id, problem, who_for, guidance, framework_terms_json, boundary, boundary_offer_id, embedding
+      `SELECT id, problem, who_for, guidance, framework_terms_json, boundary, boundary_offer_id, embedding, source_url, tier
          FROM knowledge_items WHERE creator_id = ?`,
     )
     .all<KnowledgeRow>(creatorId);

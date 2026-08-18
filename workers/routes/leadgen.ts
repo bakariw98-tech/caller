@@ -7,6 +7,7 @@ import { extractFreeContent, NoUsableContentError, type FreeContentSource } from
 import { runLeadgenPipeline, CreatorNotFoundError } from '../leadgen/pipeline.js';
 import { embedPassages, embedQuery, embeddingTextForItem, encodeVector, decodeVector, cosineSimilarity } from '../leadgen/embeddings.js';
 import { loadOffers, loadKnowledge, keywordScores, SEMANTIC_FLOOR } from '../leadgen/reply.js';
+import { syncChannel } from '../youtube/ingest.js';
 
 export const leadgenRoute = new Hono<{ Bindings: Env }>();
 
@@ -175,7 +176,7 @@ leadgenRoute.get('/api/creators/:id/knowledge', async (c) => {
   const rows = await db
     .prepare(
       `SELECT k.id, k.problem, k.who_for, k.guidance, k.boundary, k.source_refs_json, k.source_quote,
-              o.name AS boundary_offer
+              k.source_url, k.tier, k.conflicts_with, o.name AS boundary_offer
          FROM knowledge_items k
          LEFT JOIN offers o ON o.id = k.boundary_offer_id
         WHERE k.creator_id = ? ORDER BY k.created_at`,
@@ -258,6 +259,89 @@ leadgenRoute.delete('/api/creators/:id/knowledge/:itemId', async (c) => {
     .prepare('DELETE FROM knowledge_items WHERE id = ? AND creator_id = ?')
     .run(c.req.param('itemId'), c.req.param('id'));
   return c.json({ ok: true, deleted: res });
+});
+
+// -------------------------------------------------------- youtube ingest --
+
+/**
+ * Enumerates and tiers a whole channel's uploads in one request — cheap
+ * enough to do synchronously (~1 credit per ~100-video page). The expensive
+ * part, fetching and extracting each video, is NOT done here: it is drained
+ * a few videos at a time by the Cron Trigger already running for Gmail —
+ * see workers/youtube/ingest.ts's processIngestBatch() and
+ * workers/index.ts. Safe to call again on an already-connected channel to
+ * pick up new uploads; existing rows are left untouched.
+ */
+leadgenRoute.post('/api/creators/:id/youtube/connect', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const creator = await db.prepare('SELECT id FROM creators WHERE id = ?').get<{ id: string }>(creatorId);
+  if (!creator) return c.json({ error: 'creator not found' }, 404);
+  if (!c.env.TRANSCRIPT_API_KEY) return c.json({ error: 'TRANSCRIPT_API_KEY is not configured' }, 503);
+
+  const b = (await c.req.json().catch(() => ({}))) as { channel?: string };
+  const channel = String(b.channel ?? '').trim();
+  if (!channel) return c.json({ error: 'channel (a @handle or channel URL) is required' }, 400);
+
+  try {
+    const result = await syncChannel(db, creatorId, c.env.TRANSCRIPT_API_KEY, channel);
+    return c.json(result);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
+  }
+});
+
+/** Live counts for the dashboard's progress display, plus the creator's connected channel if any. */
+leadgenRoute.get('/api/creators/:id/youtube/status', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const creator = await db
+    .prepare('SELECT youtube_channel FROM creators WHERE id = ?')
+    .get<{ youtube_channel: string | null }>(creatorId);
+  if (!creator) return c.json({ error: 'creator not found' }, 404);
+
+  const counts = await db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM channel_videos WHERE creator_id = ?) AS enumerated,
+         (SELECT COUNT(*) FROM channel_videos WHERE creator_id = ? AND status = 'pending') AS pending,
+         (SELECT COUNT(*) FROM channel_videos WHERE creator_id = ? AND status = 'done') AS done,
+         (SELECT COUNT(*) FROM channel_videos WHERE creator_id = ? AND status = 'skipped') AS skipped,
+         (SELECT COUNT(*) FROM channel_videos WHERE creator_id = ? AND status = 'failed') AS failed`,
+    )
+    .get<Record<string, number>>(creatorId, creatorId, creatorId, creatorId, creatorId);
+
+  const conflicts = await db
+    .prepare(
+      `SELECT a.id AS a_id, a.problem AS a_problem, a.guidance AS a_guidance, a.source_url AS a_url,
+              b.id AS b_id, b.problem AS b_problem, b.guidance AS b_guidance, b.source_url AS b_url
+         FROM knowledge_items a JOIN knowledge_items b ON b.id = a.conflicts_with
+        WHERE a.creator_id = ?`,
+    )
+    .all(creatorId);
+
+  return c.json({ channel: creator.youtube_channel, counts, conflicts });
+});
+
+/**
+ * Dismisses a conflict without picking a side — clears the back-pointer on
+ * both rows so they stop appearing in the review list. Deliberately not an
+ * endpoint that resolves WHICH guidance is right: see the schema comment on
+ * knowledge_items.conflicts_with for why that call is the creator's alone.
+ */
+leadgenRoute.post('/api/creators/:id/youtube/conflicts/:knowledgeId/dismiss', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const knowledgeId = c.req.param('knowledgeId');
+  const row = await db
+    .prepare('SELECT conflicts_with FROM knowledge_items WHERE id = ? AND creator_id = ?')
+    .get<{ conflicts_with: string | null }>(knowledgeId, creatorId);
+  if (!row) return c.json({ error: 'not found' }, 404);
+  await db.prepare('UPDATE knowledge_items SET conflicts_with = NULL WHERE id = ?').run(knowledgeId);
+  if (row.conflicts_with) {
+    await db.prepare('UPDATE knowledge_items SET conflicts_with = NULL WHERE id = ?').run(row.conflicts_with);
+  }
+  return c.json({ ok: true });
 });
 
 leadgenRoute.delete('/api/creators/:id/offers/:offerId', async (c) => {

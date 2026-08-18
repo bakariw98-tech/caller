@@ -112,6 +112,29 @@ const PAGE = /* html */ `<!doctype html>
   </section>
 
   <section>
+    <h2>YouTube channel</h2>
+    <p class="note">Connect your channel and every video becomes knowledge — no pasting required. Videos are tiered from
+      title and length for free before anything is fetched: tutorials and frameworks first, Shorts and vlogs skipped
+      outright. Fetching and reading each video happens a few at a time in the background; refresh this page to watch
+      it progress.</p>
+    <div id="yt-connected" style="display:none">
+      <p class="note" style="margin-bottom:.6rem">Connected: <b id="yt-channel"></b></p>
+      <div class="stats" id="yt-stats"></div>
+      <div class="row" style="margin-top:.8rem">
+        <input id="yt-input" placeholder="@handle or channel URL" style="flex:1">
+        <button class="ghost" id="btn-yt-resync" type="button">Sync new uploads</button>
+      </div>
+    </div>
+    <div id="yt-disconnected">
+      <label>Your channel</label>
+      <input id="yt-input-first" placeholder="@handle, channel URL, or UC… id">
+      <div class="row" style="margin-top:.7rem"><button id="btn-yt-connect">Connect channel</button></div>
+    </div>
+    <div class="status" id="st-yt"></div>
+    <div id="yt-conflicts"></div>
+  </section>
+
+  <section>
     <h2>Knowledge</h2>
     <p class="note">What the coach can actually answer from. A <b>boundary</b> is the only thing that makes it mention a paid
       offer — items without one get answered in full and never pitch. Edit or delete anything that's wrong.</p>
@@ -211,6 +234,60 @@ const PAGE = /* html */ `<!doctype html>
       el('s-style').value = d.creator.teaching_style || '';
     });
   }
+
+  // ---- youtube
+  function loadYoutube() {
+    return api('/api/creators/' + CID + '/youtube/status').then(function (d) {
+      if (d.channel) {
+        el('yt-connected').style.display = 'block';
+        el('yt-disconnected').style.display = 'none';
+        el('yt-channel').textContent = d.channel;
+        el('yt-input').value = d.channel;
+        el('yt-stats').innerHTML =
+          '<div class="stat"><b>' + d.counts.enumerated + '</b><span>videos found</span></div>' +
+          '<div class="stat"><b>' + d.counts.done + '</b><span>processed</span></div>' +
+          '<div class="stat"><b>' + d.counts.pending + '</b><span>queued</span></div>' +
+          '<div class="stat"><b>' + d.counts.skipped + '</b><span>skipped (Shorts/vlogs)</span></div>' +
+          (d.counts.failed ? '<div class="stat"><b>' + d.counts.failed + '</b><span>failed</span></div>' : '');
+      } else {
+        el('yt-connected').style.display = 'none';
+        el('yt-disconnected').style.display = 'block';
+      }
+      var box = el('yt-conflicts');
+      if (!d.conflicts || !d.conflicts.length) { box.innerHTML = ''; return; }
+      box.innerHTML = '<p class="note" style="margin-top:1rem"><b>' + d.conflicts.length +
+        ' place' + (d.conflicts.length === 1 ? '' : 's') +
+        ' where two videos disagree.</b> Nothing was merged or guessed at — pick which one is right, or leave both.</p>';
+      d.conflicts.forEach(function (pair) {
+        var n = document.createElement('div');
+        n.className = 'item';
+        n.innerHTML =
+          '<h3>' + esc(pair.a_problem) + '</h3>' +
+          '<p><b>A:</b> ' + esc(pair.a_guidance) + (pair.a_url ? ' — <a href="' + esc(pair.a_url) + '" target="_blank" rel="noopener">video</a>' : '') + '</p>' +
+          '<p><b>B:</b> ' + esc(pair.b_guidance) + (pair.b_url ? ' — <a href="' + esc(pair.b_url) + '" target="_blank" rel="noopener">video</a>' : '') + '</p>' +
+          '<div class="row" style="margin-top:.5rem"><button class="danger yt-dismiss" type="button">Dismiss — both are fine as-is</button></div>';
+        n.querySelector('.yt-dismiss').onclick = function () {
+          api('/api/creators/' + CID + '/youtube/conflicts/' + pair.a_id + '/dismiss', { method: 'POST' })
+            .then(loadYoutube);
+        };
+        box.appendChild(n);
+      });
+    });
+  }
+
+  function connectYoutube(channel) {
+    if (!channel) return show('st-yt', 'err', 'Enter a channel handle or URL.');
+    show('st-yt', 'busy', 'Reading the channel list…');
+    api('/api/creators/' + CID + '/youtube/connect', { method: 'POST', body: { channel: channel } })
+      .then(function (r) {
+        show('st-yt', 'ok', 'Found ' + r.enumerated + ' videos — ' + r.tier1 + ' tutorials, ' + r.tier2 +
+          ' general, ' + r.skipped + ' skipped. Processing a few at a time now.');
+        return loadYoutube();
+      })
+      .catch(function (e) { show('st-yt', 'err', e.message); });
+  }
+  el('btn-yt-connect').onclick = function () { connectYoutube(el('yt-input-first').value.trim()); };
+  el('btn-yt-resync').onclick = function () { connectYoutube(el('yt-input').value.trim()); };
 
   // ---- sources
   function addSource(k, t, x) {
@@ -400,7 +477,7 @@ const PAGE = /* html */ `<!doctype html>
   };
 
   addSource();
-  loadOverview().then(loadOffers).then(loadKnowledge).then(loadProspects)
+  loadOverview().then(loadOffers).then(loadKnowledge).then(loadProspects).then(loadYoutube)
     .catch(function (e) { el('sub').textContent = 'Could not load: ' + e.message; });
 })();
 </script>

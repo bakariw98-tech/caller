@@ -542,3 +542,61 @@ ALTER TABLE prospects ADD COLUMN offer_pitched INTEGER NOT NULL DEFAULT 0;
 -- the system hoard genuinely helpful links behind a qualification process, or
 -- let paid pitches ride in under the cover of being helpful.
 ALTER TABLE offers ADD COLUMN is_free INTEGER NOT NULL DEFAULT 0;
+
+-- Whole-channel ingestion: a creator connects a YouTube channel and every
+-- video becomes a queued row instead of the creator pasting text by hand.
+--
+-- Inventory and queue state live on one table, not two, matching how
+-- email_connections carries its own poll cursor and lock rather than a
+-- separate jobs table — the resource being processed and the state of
+-- processing it are the same lifecycle.
+--
+-- tier is computed from title + duration alone, both free, before any
+-- transcript credit is spent (see workers/youtube/tier.ts):
+--   3 = skipped outright (Shorts, vlogs, announcements) -- inserted directly
+--       as status='skipped', never queued
+--   1 = tutorial/framework signal -- fetched first
+--   2 = everything else of reasonable length -- fetched after tier 1
+-- attempts/last_error/locked_until mirror email_connections' cron-safe
+-- pattern: a stuck or failing video does not block the rest of the channel,
+-- and a crashed run releases its lock rather than wedging that video forever.
+CREATE TABLE IF NOT EXISTS channel_videos (
+  id             TEXT PRIMARY KEY,
+  creator_id     TEXT NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+  video_id       TEXT NOT NULL,
+  title          TEXT NOT NULL,
+  url            TEXT NOT NULL,
+  length_seconds INTEGER,
+  tier           INTEGER NOT NULL,
+  status         TEXT NOT NULL DEFAULT 'pending', -- pending|processing|done|skipped|failed
+  attempts       INTEGER NOT NULL DEFAULT 0,
+  last_error     TEXT,
+  locked_until   INTEGER,
+  discovered_at  INTEGER NOT NULL,
+  processed_at   INTEGER,
+  UNIQUE (creator_id, video_id)
+);
+CREATE INDEX IF NOT EXISTS idx_channel_videos_queue ON channel_videos(creator_id, status, tier);
+
+-- Which channel a creator has connected, and the enumeration cursor so a
+-- second sync can resume/refresh rather than re-listing from page one.
+-- continuation_token is transcriptapi.com's own opaque pagination token.
+ALTER TABLE creators ADD COLUMN youtube_channel TEXT;
+ALTER TABLE creators ADD COLUMN youtube_continuation_token TEXT;
+
+-- Where a piece of knowledge came from, when it came from a video, and
+-- whether it disagrees with something else the creator has said.
+--
+-- source_url is populated only for video-derived items (existing hand-pasted
+-- knowledge has none) so the coach can link the actual source when that is
+-- more useful than prose -- see workers/leadgen/prompt.ts.
+--
+-- conflicts_with is deliberately just a pointer to the other row, not an
+-- attempt to resolve the disagreement: reconciling "test products quickly"
+-- against "validate demand first" would be inventing a principle the
+-- creator never stated, which is exactly the dishonesty this whole system
+-- exists to avoid. Both rows stay retrievable; the creator resolves it in
+-- the dashboard. See workers/leadgen/dedupe.ts.
+ALTER TABLE knowledge_items ADD COLUMN source_url TEXT;
+ALTER TABLE knowledge_items ADD COLUMN tier INTEGER NOT NULL DEFAULT 2;
+ALTER TABLE knowledge_items ADD COLUMN conflicts_with TEXT REFERENCES knowledge_items(id) ON DELETE SET NULL;
