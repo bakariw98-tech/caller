@@ -31,27 +31,26 @@ export interface ProspectContext {
   askedAbout: string | null;
   /** EVERY dimension ever asked about. `askedAbout` alone only guarded one turn back. */
   askedDimensions: string[];
-  /** True when their message is a short acknowledgement rather than a real question. */
-  isAcknowledgement: boolean;
 }
 
 /**
- * Whether an inbound message is a pleasantry rather than a real question.
+ * Deterministic opt-out detection, independent of the model's judgement.
  *
- * "Thanks for the tip!" and "Interesting." were each answered with a full
- * paragraph of methodology plus a repeated question. Replying to an
- * acknowledgement with a lecture is one of the clearest tells that nobody is
- * really on the other end, so the reply needs to know the difference.
+ * Message classification is otherwise the model's job — it reads intent far
+ * better than any keyword list. This one case gets a hard-coded check as well
+ * because it is the only classification where a miss causes real harm:
+ * continuing to email someone who asked you to stop. Belt and braces, with the
+ * two signals ORed together, so a model lapse cannot override an explicit
+ * request to be left alone.
  *
- * Length plus the absence of a question mark is the whole heuristic — anything
- * cleverer risks misreading a genuinely short question ("how much?"), and the
- * cost of a false negative here is just a normal reply.
+ * Anchored to short messages: someone writing three paragraphs that happen to
+ * contain the word "stop" is not opting out, whereas opt-outs are almost
+ * always terse.
  */
-export function isAcknowledgementMessage(text: string): boolean {
-  const t = text.trim();
-  if (!t || t.length > 60) return false;
-  if (t.includes('?')) return false;
-  return /\b(thanks|thank you|thx|ok|okay|got it|cool|nice|great|interesting|appreciate|will do|sounds good|makes sense|noted)\b/i.test(t);
+export function looksLikeOptOut(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  if (!t || t.length > 200) return false;
+  return /\b(unsubscribe|stop emailing|stop sending|remove me|take me off|leave me alone|do not (email|contact) me|don't (email|contact) me|no longer (wish|want))\b/.test(t);
 }
 
 /** The discovery dimensions, in the order they are shown to the model. */
@@ -372,21 +371,46 @@ export function buildReplyInstructions(params: {
     ].join('\n'),
   );
 
-  if (prospect.isAcknowledgement) {
-    s.push(
-      [
-        'THEIR MESSAGE IS AN ACKNOWLEDGEMENT, NOT A QUESTION.',
-        'They said thanks, or that something was interesting. That is a person being polite at the end of',
-        'a useful exchange — not a request for more teaching.',
-        '',
-        'Reply in ONE OR TWO SHORT SENTENCES. Warm, human, done. Do not re-explain anything. Do not',
-        'summarise what you already told them. Do not ask another question unless there is a genuinely',
-        'unasked gap AND it flows naturally — usually there is not, and saying nothing is right.',
-        'If an offer genuinely fits and you have never mentioned it, this is a reasonable moment for one',
-        'light line about it. Otherwise just be gracious and stop.',
-      ].join('\n'),
-    );
-  }
+  s.push(
+    [
+      'FIRST, WORK OUT WHAT THIS MESSAGE ACTUALLY IS. Set `message_type` before you write anything.',
+      '',
+      'People do not only send questions. They acknowledge, push back, get confused, ask what something',
+      'costs, answer something you asked, or tell you to go away. Each of those needs a different reply,',
+      'and treating them all as "a question to answer" is the single clearest sign nobody is really on the',
+      'other end. Read their message as a person would and decide honestly which of these it is:',
+      '',
+      '  question       — they are genuinely asking something. Answer it.',
+      '  context        — they are giving you information, often answering what you asked. Acknowledge what',
+      '                   they told you in a few words, say what it means for them, and go one step deeper.',
+      '                   Do NOT re-answer their original question from scratch.',
+      '  acknowledgement— "thanks", "interesting", "got it". They are being polite, not asking for more.',
+      '                   ONE or TWO warm sentences. No teaching, no summary, usually no question. Answering',
+      '                   a pleasantry with a paragraph of methodology is absurd and has happened here.',
+      '  clarification  — they did not follow something you said. Explain THAT ONE THING, plainly, with a',
+      '                   concrete example. Do not repeat the surrounding advice, and do not add new topics.',
+      '  pushback       — they disagree, doubt it applies to them, or say they already tried it. Take it',
+      '                   seriously. Acknowledge the point honestly, and either explain why it still applies',
+      '                   to their specific case or concede it plainly. Never steamroll them with the same',
+      '                   advice restated more firmly — that is how you lose someone permanently.',
+      '  buying_signal  — they asked what it costs, how to start, or for the link. Answer DIRECTLY and',
+      '                   immediately, with the price if it is listed below and the link. Do not make them',
+      '                   ask twice, do not answer with more discovery questions. This is the easiest sale',
+      '                   there is and burying it is unforgivable.',
+      '  confused       — they do not know who you are or why you are emailing. Say plainly who you are and',
+      `                   that they wrote in to ${creator.business_name}. Be brief and warm. Do not sell.`,
+      '  off_topic      — nothing to do with what this creator teaches. Say so kindly and briefly.',
+      '  opt_out        — they want the emails to stop. See the rule below, which overrides everything.',
+      '  other          — none of the above fits cleanly.',
+      '',
+      'IF IT IS `opt_out` — THIS OVERRIDES EVERY OTHER INSTRUCTION IN THIS PROMPT.',
+      'Someone asking to be left alone gets left alone. Write NOTHING in `body` — an empty string. Do not',
+      'apologise, do not try to keep them, do not ask why, do not send a final helpful thought, and above',
+      'all do not pitch. No reply at all is sent, and that is correct. Anything that reads as "please stop"',
+      'counts, however casually it is phrased: "unsubscribe", "stop emailing me", "take me off this",',
+      '"not interested", "leave me alone".',
+    ].join('\n'),
+  );
 
   s.push(
     [

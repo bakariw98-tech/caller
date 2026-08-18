@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { selectKnowledge, scoreProspect, buildEmailBody, type KnowledgeRow } from '../workers/leadgen/reply.js';
-import { buildDiscoveryState, isAcknowledgementMessage, type ProspectContext } from '../workers/leadgen/prompt.js';
+import { buildDiscoveryState, looksLikeOptOut, type ProspectContext } from '../workers/leadgen/prompt.js';
 
 function item(overrides: Partial<KnowledgeRow> & { id: string; problem: string }): KnowledgeRow {
   return {
@@ -173,7 +173,6 @@ function ctx(over: Partial<ProspectContext> = {}): ProspectContext {
     priorExchanges: 0,
     askedAbout: null,
     askedDimensions: [],
-    isAcknowledgement: false,
     ...over,
   };
 }
@@ -280,33 +279,41 @@ describe('buildDiscoveryState', () => {
   });
 });
 
-describe('isAcknowledgementMessage', () => {
-  it('recognises the pleasantries that were answered with full lectures', () => {
-    // Verbatim from the live thread: each of these got a paragraph of
-    // methodology plus a repeated question in reply.
-    for (const t of ['Thanks for the tip!', 'Interesting.', 'Got it', 'ok cool', 'Makes sense', 'Appreciate it']) {
-      expect(isAcknowledgementMessage(t)).toBe(true);
+describe('looksLikeOptOut', () => {
+  it('catches the ways people actually ask to be left alone', () => {
+    for (const t of [
+      'unsubscribe',
+      'Please stop emailing me',
+      'take me off this list',
+      'remove me',
+      'leave me alone',
+      "don't email me again",
+      'STOP SENDING THESE',
+    ]) {
+      expect(looksLikeOptOut(t)).toBe(true);
     }
   });
 
-  it('does not misread a genuine question as a pleasantry', () => {
+  it('does not fire on ordinary messages', () => {
     for (const t of [
-      'Thanks — how do I price this?',
-      'ok but what about landing pages?',
-      'How do I make my copy convert?',
+      'Thanks for the tip!',
+      'How do I stop my ads from underperforming?',
+      'I want to remove the fluff from my copy',
       'Getting sales',
     ]) {
-      expect(isAcknowledgementMessage(t)).toBe(false);
+      expect(looksLikeOptOut(t)).toBe(false);
     }
   });
 
-  it('does not treat a long message as an acknowledgement even if it opens with thanks', () => {
-    const long = 'Thanks for that. I run an agency doing paid ads for eight local service clients and I cannot keep up with the writing.';
-    expect(isAcknowledgementMessage(long)).toBe(false);
+  it('ignores a long message that merely contains the words', () => {
+    // Opt-outs are terse. A long message mentioning "stop emailing" in passing
+    // — quoting a complaint, say — is not someone opting out.
+    const long = 'I run an agency and my clients always say things like stop emailing me when the sequences are too aggressive, so I want to know how to write follow-ups that people actually welcome instead of resenting. What is the right cadence?';
+    expect(looksLikeOptOut(long)).toBe(false);
   });
 
-  it('ignores empty or whitespace input', () => {
-    expect(isAcknowledgementMessage('   ')).toBe(false);
+  it('ignores empty input', () => {
+    expect(looksLikeOptOut('   ')).toBe(false);
   });
 });
 

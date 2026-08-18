@@ -165,7 +165,21 @@ export function selectKnowledgeHybrid(
     .map((x) => x.row);
 }
 
+export type MessageType =
+  | 'question'
+  | 'context'
+  | 'acknowledgement'
+  | 'clarification'
+  | 'pushback'
+  | 'buying_signal'
+  | 'off_topic'
+  | 'confused'
+  | 'opt_out'
+  | 'other';
+
 export interface QualificationSignals {
+  /** What the inbound message actually is. Drives how the reply is shaped. */
+  message_type: MessageType;
   situation: string | null;
   /** What they want — the destination half of the gap an offer closes. */
   goal: string | null;
@@ -194,6 +208,26 @@ export interface GeneratedReply {
 const replyJson = {
   type: 'object',
   properties: {
+    // Deliberately the FIRST property. Generation is autoregressive, so
+    // committing to an interpretation of the message before writing anything
+    // makes the reply conditioned on that reading rather than the label being
+    // a post-hoc guess about text already written.
+    message_type: {
+      type: 'string',
+      enum: [
+        'question',
+        'context',
+        'acknowledgement',
+        'clarification',
+        'pushback',
+        'buying_signal',
+        'off_topic',
+        'confused',
+        'opt_out',
+        'other',
+      ],
+      description: 'What this message actually IS. Decide this before writing anything else.',
+    },
     body: { type: 'string', description: 'The email body. No subject line, no signature.' },
     situation: { type: 'string', description: "The person's situation, if they described one." },
     goal: { type: 'string', description: 'What they actually want — the outcome they are after, if stated.' },
@@ -239,7 +273,7 @@ const replyJson = {
       description: "True if you answered from the creator's material; false if you had to say it wasn't covered.",
     },
   },
-  required: ['body', 'objections', 'topics', 'hit_boundary', 'qualifies_for_offer', 'answered_from_material'],
+  required: ['message_type', 'body', 'objections', 'topics', 'hit_boundary', 'qualifies_for_offer', 'answered_from_material'],
   additionalProperties: false,
 } as const;
 
@@ -374,6 +408,7 @@ export async function generateReply(params: {
     routed_offer_name?: string;
     offer_pitch?: string;
     answered_from_material: boolean;
+    message_type?: MessageType;
   }>(params.apiBase, params.apiKey, {
     model: params.model,
     system,
@@ -398,6 +433,7 @@ export async function generateReply(params: {
   return {
     body,
     signals: {
+      message_type: value.message_type ?? 'other',
       situation: value.situation ?? null,
       goal: value.goal ?? null,
       tried: value.tried ?? null,

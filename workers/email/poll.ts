@@ -140,6 +140,15 @@ async function pollOneConnection(
       // Bounces, notifications and promos are not leads — see AUTOMATED_SENDER_PATTERN.
       if (AUTOMATED_SENDER_PATTERN.test(inbound.from)) continue;
 
+      // Never email someone who asked to be left alone — checked before any
+      // work is done, so an opted-out sender costs nothing and can never
+      // receive a reply even if a later message from them looks like a
+      // question.
+      const optedOut = await db
+        .prepare('SELECT 1 FROM prospects WHERE creator_id = ? AND email = ? AND opted_out = 1 LIMIT 1')
+        .get(conn.creator_id, inbound.from);
+      if (optedOut) continue;
+
       // Idempotency: candidates are deliberately over-collected (see
       // listNewInboxMessages), so the same real message can legitimately
       // surface again on a later poll — e.g. our own reply changes the
@@ -165,6 +174,10 @@ async function pollOneConnection(
         sourceMessageId: gmailId,
         text: inbound.text,
       });
+
+      // An empty reply is the pipeline signalling "send nothing" — currently
+      // an opt-out. Record it, do not mail it.
+      if (!result.reply.trim()) continue;
 
       const raw = buildRawMessage({
         to: inbound.from,

@@ -11,7 +11,7 @@ import {
 } from './reply.js';
 import { embedQuery, type AiBinding } from './embeddings.js';
 import { stripQuotedReply } from '../email/gmail.js';
-import { isAcknowledgementMessage } from './prompt.js';
+import { looksLikeOptOut } from './prompt.js';
 
 export class CreatorNotFoundError extends Error {
   constructor(creatorId: string) {
@@ -168,13 +168,20 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
       priorExchanges: prospect?.exchanges ?? 0,
       askedAbout: prospect?.last_asked_about ?? null,
       askedDimensions: safeArr(prospect?.asked_dimensions_json),
-      isAcknowledgement: isAcknowledgementMessage(question),
     },
     history,
     // Signed so a click cannot be forged into another creator's attribution.
     offerLink: (offerId) =>
       `${params.publicBaseUrl}/r/${offerId}.${prospect ? prospect.id : 'anon'}.${hmacHex(params.mcpTokenSecret, `${offerId}:${prospect ? prospect.id : 'anon'}`).slice(0, 16)}`,
   });
+
+  // The model's read and the deterministic check are ORed: either one is
+  // enough to stop. A false positive costs one unsent reply; a false negative
+  // means emailing someone who asked to be left alone.
+  const optedOut = generated.signals.message_type === 'opt_out' || looksLikeOptOut(question);
+  if (optedOut && persist && prospect) {
+    await db.prepare('UPDATE prospects SET opted_out = 1, last_seen_at = ? WHERE id = ?').run(now(), prospect.id);
+  }
 
   if (persist && prospect) {
     const s = generated.signals;
@@ -259,7 +266,9 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
 
   return {
     creator,
-    reply: generated.body,
+    // Empty reply means the caller sends nothing. Silence is the correct
+    // response to "stop emailing me" — a farewell note is still another email.
+    reply: optedOut ? '' : generated.body,
     signals: generated.signals,
     routedOfferId: generated.routedOfferId,
     knowledgeUsed: knowledge.map((k) => ({ problem: k.problem, had_boundary: Boolean(k.boundary) })),

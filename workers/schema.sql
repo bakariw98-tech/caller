@@ -495,3 +495,9 @@ ALTER TABLE prospects ADD COLUMN last_asked_about TEXT;
 -- question asked in five consecutive replies, including once immediately after
 -- the prospect had answered it.
 ALTER TABLE prospects ADD COLUMN asked_dimensions_json TEXT NOT NULL DEFAULT '[]';
+
+-- Somebody who asks to be left alone must never be emailed again. There was
+-- no opt-out path at all: a reply saying "stop emailing me" was answered with
+-- a coaching response like any other message, which is both a bad experience
+-- and the kind of thing that gets a sending address blocked.
+ALTER TABLE prospects ADD COLUMN opted_out INTEGER NOT NULL DEFAULT 0;
