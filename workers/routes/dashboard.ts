@@ -58,7 +58,7 @@ export const PAGE = /* html */ `<!doctype html>
   h2 { font-size: 1.02rem; margin: 0 0 .15rem; }
   .note { color: #8a8a90; font-size: .84rem; margin: 0 0 .9rem; }
   label { display: block; font-weight: 600; font-size: .85rem; margin: .8rem 0 .28rem; }
-  input, textarea, select { width: 100%; padding: .55rem .65rem; font: inherit; border: 1px solid #d6d6da; border-radius: 8px; background: #fff; color: inherit; }
+  input, textarea, select { width: 100%; padding: .55rem .65rem; font: inherit; font-size: 16px; border: 1px solid #d6d6da; border-radius: 8px; background: #fff; color: inherit; }
   textarea { min-height: 8rem; resize: vertical; font-size: .9rem; }
   button { font: inherit; font-weight: 600; padding: .55rem 1rem; border-radius: 8px; border: 1px solid #1a1a1c; background: #1a1a1c; color: #fff; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
@@ -73,6 +73,7 @@ export const PAGE = /* html */ `<!doctype html>
   .pill.off { background: #fdecea; color: #b3261e; }
   .item { border: 1px solid #e5e5e7; border-radius: 10px; padding: .8rem .9rem; margin-bottom: .6rem; }
   .item h3 { font-size: .93rem; margin: 0 0 .35rem; }
+  .trunc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .item p { margin: .25rem 0; font-size: .88rem; color: #4a4a4f; }
   .bnd { background: #fff8e6; border-left: 3px solid #e0a800; padding: .4rem .6rem; margin-top: .5rem; font-size: .85rem; border-radius: 0 6px 6px 0; }
   .bnd b { color: #8a6100; }
@@ -84,6 +85,18 @@ export const PAGE = /* html */ `<!doctype html>
   th, td { text-align: left; padding: .45rem .3rem; border-bottom: 1px solid #ededf0; }
   th { color: #8a8a90; font-weight: 600; font-size: .8rem; }
   a { color: #1a1a1c; }
+  @media (max-width: 480px) {
+    body { padding: 1rem .75rem 4rem; font-size: 14.5px; }
+    section { padding: .85rem .8rem; border-radius: 10px; margin-bottom: .7rem; }
+    h1 { font-size: 1.2rem; }
+    .sub { margin-bottom: 1rem; }
+    .note { font-size: .8rem; margin-bottom: .7rem; }
+    .stats { gap: .9rem 1.1rem; }
+    .stat b { font-size: 1.05rem; }
+    .stat span { font-size: .74rem; }
+    .item { padding: .6rem .65rem; margin-bottom: .45rem; }
+    button { padding: .5rem .8rem; }
+  }
 </style>
 </head>
 <body>
@@ -485,8 +498,19 @@ export const PAGE = /* html */ `<!doctype html>
         var offOpts = ['<option value="">— no offer —</option>'].concat(OFFERS.map(function (o) {
           return '<option value="' + esc(o.id) + '"' + (o.name === it.boundary_offer ? ' selected' : '') + '>' + esc(o.name) + '</option>';
         })).join('');
+        // Collapsed by default: a creator can have 100+ of these, and a page
+        // of fully-expanded cards is the single biggest source of scroll on
+        // a phone. Same shape as the prospect rows below — one-line summary,
+        // everything else behind a toggle.
         n.innerHTML =
-          '<h3>' + esc(it.problem) + '</h3>' +
+          '<h3 class="trunc">' + esc(it.problem) + '</h3>' +
+          '<div class="row" style="justify-content:space-between">' +
+            '<span class="pill ' + (it.boundary ? 'off' : 'on') + '">' +
+              (it.boundary ? 'Routes to ' + esc(it.boundary_offer || 'nothing') : 'Answers fully') +
+            '</span>' +
+            '<button class="danger k-toggle" type="button">Details</button>' +
+          '</div>' +
+          '<div class="k-detail" style="display:none">' +
           '<p>' + esc(it.guidance) + '</p>' +
           (it.boundary
             ? '<div class="bnd"><b>Routes to ' + esc(it.boundary_offer || 'nothing') + '</b> — free material stops at: ' + esc(it.boundary) + '</div>'
@@ -502,7 +526,12 @@ export const PAGE = /* html */ `<!doctype html>
             '<textarea class="k-boundary" style="min-height:3.5rem">' + esc(it.boundary || '') + '</textarea>' +
             '<label>Offer that picks up past that line</label><select class="k-offer">' + offOpts + '</select>' +
             '<div class="row" style="margin-top:.6rem"><button class="k-save" type="button">Save</button></div>' +
+          '</div>' +
           '</div>';
+        n.querySelector('.k-toggle').onclick = function () {
+          var d = n.querySelector('.k-detail');
+          d.style.display = d.style.display === 'none' ? 'block' : 'none';
+        };
         n.querySelector('.k-edit').onclick = function () {
           var f = n.querySelector('.k-form');
           f.style.display = f.style.display === 'none' ? 'block' : 'none';
@@ -682,7 +711,7 @@ export const PAGE = /* html */ `<!doctype html>
           '<h3>' + esc(p.email) +
             (p.qualified_at ? ' <span class="pill on">qualified</span>' : '') +
             (p.clicked_offer ? ' <span class="pill on">clicked</span>' : '') + '</h3>' +
-          '<p>' + esc(p.blocked_on || p.situation || 'No situation captured yet') +
+          '<p class="trunc">' + esc(p.blocked_on || p.situation || 'No situation captured yet') +
             ' · ' + p.exchanges + ' email' + (p.exchanges === 1 ? '' : 's') + ' · score <b>' + p.score + '</b></p>' +
           '<div class="row" style="margin-top:.5rem"><button class="danger p-toggle" type="button">Full record</button></div>' +
           '<div class="p-detail" style="display:none;margin-top:.6rem">' +
