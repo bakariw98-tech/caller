@@ -704,9 +704,18 @@ leadgenRoute.post('/api/creators/:id/mcp-keys', async (c) => {
   const label = String(b.label ?? '').trim() || null;
 
   const token = await mintAssistantToken(db, c.env.MCP_TOKEN_SECRET, { creatorId, ttlSeconds: null, label });
+  const serverUrl = `${c.env.PUBLIC_BASE_URL}/mcp`;
   // The only moment this plaintext exists outside the request that
   // generated it — never logged, never stored, never returned again.
-  return c.json({ token, server_url: `${c.env.PUBLIC_BASE_URL}/mcp` }, 201);
+  //
+  // connector_url carries the token as a query param, baked in, because
+  // most "add a custom connector" UIs (Claude's included) only offer a
+  // single URL field, no separate auth-token field — this server's own
+  // /mcp route already accepts the token that way specifically for that
+  // case. Building it here rather than leaving the creator to
+  // concatenate server_url + token themselves is the whole point of this
+  // change: one thing to paste, not two things to combine correctly.
+  return c.json({ token, server_url: serverUrl, connector_url: `${serverUrl}?token=${encodeURIComponent(token)}` }, 201);
 });
 
 /** Labels, timestamps, and hashes only — never a usable credential. */

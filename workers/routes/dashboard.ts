@@ -258,16 +258,20 @@ export const PAGE = /* html */ `<!doctype html>
   <section>
     <h2>Connect your own agent</h2>
     <p class="note">The same assistant you can talk to above, reachable from Claude Desktop or any MCP-capable agent of
-      your own. A key is shown to you exactly once — copy it before closing this. <b>Treat it like a password:</b> it
-      can read and change everything above, including sending email as you, for as long as it exists. Revoke a key any
-      time you no longer recognize it.</p>
+      your own. Creating one gives you a single link — paste that in as the connector, nothing else to configure. It's
+      shown to you exactly once, so copy it before closing this. <b>Treat it like a password:</b> it can read and
+      change everything above, including sending email as you, for as long as it exists. Revoke it any time you no
+      longer recognize it.</p>
     <label>Label (so you can tell keys apart later)</label>
     <input id="mcpkey-label" placeholder="e.g. my laptop, Claude Desktop">
     <div class="row" style="margin-top:.6rem"><button id="btn-mcpkey-create" class="ghost" type="button">Create a key</button></div>
     <div class="status" id="st-mcpkey"></div>
     <div id="mcpkey-new" style="display:none;margin-top:.7rem">
-      <label>Server URL</label><input id="mcpkey-url" readonly>
-      <label>Key — copy this now, it will not be shown again</label><input id="mcpkey-token" readonly>
+      <label>Paste this in as the connector — copy it now, it will not be shown again</label>
+      <div class="row">
+        <input id="mcpkey-url" readonly style="flex:1">
+        <button id="btn-mcpkey-copy" class="ghost" type="button" style="flex:0 0 auto">Copy</button>
+      </div>
     </div>
     <div id="mcpkey-list" style="margin-top:.8rem"></div>
   </section>
@@ -811,13 +815,19 @@ export const PAGE = /* html */ `<!doctype html>
     api('/api/creators/' + CID + '/mcp-keys', { method: 'POST', body: { label: el('mcpkey-label').value.trim() } })
       .then(function (d) {
         show('st-mcpkey', 'ok', 'Copy this now — it will not be shown again.');
-        el('mcpkey-url').value = d.server_url;
-        el('mcpkey-token').value = d.token;
+        el('mcpkey-url').value = d.connector_url;
         el('mcpkey-new').style.display = 'block';
         el('mcpkey-label').value = '';
         return loadMcpKeys();
       })
       .catch(function (e) { show('st-mcpkey', 'err', e.message); });
+  };
+
+  el('btn-mcpkey-copy').onclick = function () {
+    el('mcpkey-url').select();
+    navigator.clipboard.writeText(el('mcpkey-url').value)
+      .then(function () { show('st-mcpkey', 'ok', 'Copied.'); })
+      .catch(function () { show('st-mcpkey', 'err', 'Could not copy automatically — select the text and copy it yourself.'); });
   };
 
   // ---- settings
