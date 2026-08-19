@@ -239,6 +239,56 @@ real questions; the model's grounding instructions are what actually decline
 off-topic ones, verified against gardening, mortgage and dog-training
 questions. Re-measure with `/retrieval-debug` before changing it.
 
+## Voice escalation — the phone call as the real sales conversation
+
+A second phone number per creator, with `purpose = 'qualify'` instead of the
+default `'coach'`. When a genuinely-interested prospect emails in and this
+mode is on, instead of a written reply they get a warm one-tap invitation to
+call — the call itself is where discovery, diagnosis, and an
+honestly-earned offer all happen live, not a phone-flavored qualification
+gate ahead of an email that still does the real selling.
+
+**Setup, from the dashboard** (`/dashboard/:creatorId?key=...`):
+
+1. Provision a second number in the xAI console the same way as the coach
+   number (see "Provision in the xAI console" above), then register it
+   under the new "Voice escalation" section — same manual-registration flow
+   as a coach number, this one just carries `purpose: 'qualify'`.
+2. A Gmail connection must already exist — the hook email needs somewhere
+   to send from. Enabling the mode is refused server-side
+   (`PATCH /api/creators/:id/voice-qualification`) until both the number
+   and the Gmail connection exist, so this can't be half-configured live.
+3. Optionally set the objection posture (`soft`, the default, backs off
+   after one honest answer; `assertive` allows a couple of genuine
+   re-engagements first).
+4. Per-offer sales truth (who it's NOT for, known objections and how to
+   answer them, when to recommend it / not, next-step style) is entered on
+   each offer in the existing "Offers" section — this is what the call
+   prompt is grounded in; nothing beyond it is ever said on a call.
+
+**Prompt-size measurement** (the plan for this feature flagged this as a
+real unknown, not something to assume scales the same way email's short
+offer list did — measured directly against `buildQualCallInstructions()`,
+not estimated):
+
+| offers loaded (full sales-truth playbook each) | prompt size |
+|---|---|
+| 0   | ~1,900 tokens |
+| 1   | ~2,300 tokens |
+| 2   | ~2,700 tokens |
+| 4   | ~3,500 tokens |
+
+Each additional offer's full playbook (who_for, not_who_for, covers,
+price_text, recommend_when, dont_recommend_when, a realistic paragraph of
+objections_and_responses) costs roughly 400-450 tokens. This is sent
+**once**, in `session.update` at call start, never rebuilt mid-call — unlike
+email's per-turn prompt, so it does not multiply by conversation length the
+way a per-turn cost would. A creator running up to 4-5 offers with full
+playbooks stays comfortably under 4,000 tokens for the whole standing
+instructions; re-measure here if a creator's offer count grows well past
+that, since the linear-per-offer cost does eventually add up for someone
+running a large catalog.
+
 ## What isn't ported yet
 
 The call path — webhook, Durable Object, MCP tools, billing, structure audit,
