@@ -17,7 +17,7 @@ onboardingRoute.get('/onboard', (c) => {
   return c.html(PAGE);
 });
 
-const PAGE = /* html */ `<!doctype html>
+export const PAGE = /* html */ `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -131,6 +131,10 @@ const PAGE = /* html */ `<!doctype html>
     </select>
     <label>Phone number to transfer to (optional)</label>
     <input id="escalation_phone" placeholder="+15550100200">
+    <label>Login email (optional — lets them log into their own dashboard right away)</label>
+    <input id="login_email" type="email" placeholder="creator@example.com">
+    <label>Initial password (optional — tell them this yourself; they can change it once logged in)</label>
+    <input id="login_password" type="password" autocomplete="new-password" placeholder="at least 8 characters">
     <button id="btn-creator">Create coach</button>
     <div id="status-creator" class="status"></div>
   </section>
@@ -251,9 +255,9 @@ const PAGE = /* html */ `<!doctype html>
     el.classList.remove('active');
     el.classList.add('done', 'active');
   }
-  async function call(path, body) {
+  async function call(path, body, method) {
     const res = await fetch(base + path, {
-      method: 'POST',
+      method: method || 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
       body: JSON.stringify(body || {}),
     });
@@ -299,7 +303,24 @@ const PAGE = /* html */ `<!doctype html>
       });
       creatorId = res.id;
       creatorSlug = res.slug;
-      show('creator', 'ok', 'Created — <code>' + res.id + '</code> (slug: ' + res.slug + ')');
+
+      const loginEmail = document.getElementById('login_email').value.trim();
+      const loginPassword = document.getElementById('login_password').value;
+      if (loginEmail && loginPassword) {
+        try {
+          await call('/api/creators/' + creatorId + '/login', { login_email: loginEmail, new_password: loginPassword }, 'PATCH');
+        } catch (e) {
+          // The creator itself is already made — a login-setup failure (e.g. that
+          // email already belongs to another creator) shouldn't block the rest of
+          // the wizard. It can always be set later the same way.
+          show('creator', 'ok', 'Created — <code>' + res.id + '</code> (slug: ' + res.slug + '). Login was NOT set: ' + e.message);
+          complete('creator');
+          unlock('curriculum');
+          return;
+        }
+      }
+
+      show('creator', 'ok', 'Created — <code>' + res.id + '</code> (slug: ' + res.slug + ')' + (loginEmail && loginPassword ? ' — login set.' : ''));
       complete('creator');
       unlock('curriculum');
     } catch (e) {
@@ -382,7 +403,7 @@ const PAGE = /* html */ `<!doctype html>
         'Cost $' + (res.usage.costUsd || 0).toFixed(3) + '.';
       if (errors.length) {
         html += '<p style="margin:.5rem 0 0"><strong>' + errors.length + ' gap(s) to fill in.</strong> ' +
-          'These were left blank on purpose — your material didn\'t state them, and guessing would put ' +
+          'These were left blank on purpose — your material didn\\'t state them, and guessing would put ' +
           'words in your mouth. Edit the curriculum below, then upload.</p>';
       }
       html += renderIssues(res.issues);

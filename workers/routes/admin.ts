@@ -21,8 +21,44 @@ export const adminRoute = new Hono<{ Bindings: Env }>();
  * `/api/*` handlers. The dashboard and customer-facing pages (signup, OTP
  * verification, top-up) are not ported in this pass; see docs/DEPLOY.md for
  * what that means for a first test and how to seed a customer directly.
+ *
+ * Deliberately scoped to this file's own exact routes, NOT a blanket
+ * '/api/*' — found live, the hard way, adding the creator login: every
+ * `app.route('/', someRoute)` in workers/app.ts mounts at the SAME base
+ * path, so Hono flattens every sub-app's `.use()` middleware into one
+ * router matched purely by pattern. A blanket '/api/*' here ran on EVERY
+ * `/api/*` request in the whole app, including leadgen.ts's and phone-
+ * numbers.ts's own routes — and since admin.ts is registered first in
+ * app.ts, its admin-token-only check ran (and rejected) before those
+ * files' own, more permissive, creator-session-aware checks ever got a
+ * chance to execute. Harmless before that gap existed (every file's
+ * middleware checked the identical ADMIN_TOKEN, so which one "won" never
+ * mattered); silently breaking once one credential family diverged from
+ * the others. This file's own routes are genuinely operator-only
+ * (creating a creator, curriculum, publishing, agent setup) — the exact
+ * path list below, not a wildcard, is what keeps that true without
+ * leaking onto anyone else's routes again.
  */
+// Exact paths, not patterns with wildcards — deliberately checked with a
+// regex per entry (matching `:id`-style segments loosely) rather than
+// relying on Hono's own multi-pattern `.use()` overload, which this
+// version doesn't accept an array for. Still registered on the broad
+// '/api/*' below for compatibility; the narrowing happens inside the
+// handler by checking the actual path against this list, so a request
+// for a path admin.ts doesn't own just falls through via next() —
+// exactly as if this middleware were never in the chain for it.
+export const ADMIN_ROUTE_PATTERNS = [
+  /^\/api\/creators$/,
+  /^\/api\/creators\/[^/]+\/curriculum$/,
+  /^\/api\/creators\/[^/]+\/curriculum\/structure$/,
+  /^\/api\/curriculum\/audit$/,
+  /^\/api\/creators\/[^/]+\/promotional-budget$/,
+  /^\/api\/creators\/[^/]+\/publish$/,
+  /^\/api\/creators\/[^/]+\/agent-setup$/,
+];
 adminRoute.use('/api/*', async (c, next) => {
+  if (!ADMIN_ROUTE_PATTERNS.some((re) => re.test(c.req.path))) return next();
+
   const token = c.env.ADMIN_TOKEN;
   if (!token) return c.json({ error: 'ADMIN_TOKEN is not configured' }, 503);
   const header = c.req.header('Authorization')?.replace(/^Bearer\s+/i, '');

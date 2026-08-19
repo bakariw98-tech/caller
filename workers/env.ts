@@ -17,6 +17,8 @@ export interface Env {
   PUBLIC_BASE_URL: string;
   MCP_TOKEN_SECRET: string;
   ADMIN_TOKEN: string;
+  /** Signs creator login session tokens — deliberately separate from MCP_TOKEN_SECRET, see workers/auth/session.ts. */
+  SESSION_SECRET: string;
 
   // Gmail transport for the lead engine. One Google Cloud project's OAuth
   // client is shared across every creator; each creator's own refresh token

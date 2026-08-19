@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from '../env.js';
+import { checkCreatorAccess } from '../auth/require-creator.js';
 
 export const dashboardRoute = new Hono<{ Bindings: Env }>();
 
@@ -11,30 +12,22 @@ export const dashboardRoute = new Hono<{ Bindings: Env }>();
  * lives in afterwards: add material, fix what extraction got wrong, try a
  * question before a real prospect asks it, see who has been writing in.
  *
- * Auth is the admin token carried in the query string rather than typed into
- * a field on every visit, so the whole thing is one bookmarkable link. That
- * is a deliberate trade and worth being honest about: anyone holding the URL
- * holds the access. It is not made public precisely because this page can
- * put words in the creator's outgoing email and can read prospects' real
- * addresses — an unauthenticated version would let a stranger do both. Same
- * secret as before, one less thing to retype.
+ * Was a single platform-wide ADMIN_TOKEN carried as `?key=` in the URL —
+ * bookmarkable, but not scoped to a creator at all: anyone holding it could
+ * open ANY creator's dashboard by changing the id in the path. Now a real
+ * per-creator login (see workers/auth/require-creator.ts): a session cookie
+ * whose creator_id matches THIS path, or the admin token as a support
+ * override (kept deliberately, on request — same operator access as
+ * before, just no longer the only way in). No key in the URL either way.
  */
-dashboardRoute.get('/dashboard/:creatorId', (c) => {
-  const token = c.env.ADMIN_TOKEN;
-  if (!token) return c.text('ADMIN_TOKEN is not configured', 503);
-  if (c.req.query('key') !== token) {
-    return c.html(DENIED, 401);
+dashboardRoute.get('/dashboard/:creatorId', async (c) => {
+  const creatorId = c.req.param('creatorId');
+  const access = await checkCreatorAccess(c, creatorId);
+  if (!access) {
+    return c.redirect(`/login?next=${encodeURIComponent(`/dashboard/${creatorId}`)}`);
   }
   return c.html(PAGE);
 });
-
-const DENIED = /* html */ `<!doctype html><html><head><meta charset="utf-8"><title>Dashboard</title>
-<style>body{font:16px/1.6 ui-sans-serif,system-ui,sans-serif;max-width:30rem;margin:5rem auto;padding:0 1.5rem;color:#1a1a1c}code{background:#f2f2f4;padding:.15rem .35rem;border-radius:4px;font-size:.85em}</style>
-</head><body>
-<h2>Not your link</h2>
-<p>This dashboard opens from a link that carries its own key, like
-<code>/dashboard/&lt;creator-id&gt;?key=&lt;admin-token&gt;</code>. Use the full link you were given and bookmark it.</p>
-</body></html>`;
 
 // Exported for tests/dashboard.test.ts, which parses the embedded <script>
 // with new Function() to catch a JS syntax error before it reaches a
@@ -104,8 +97,9 @@ export const PAGE = /* html */ `<!doctype html>
   <h1 id="biz">Loading…</h1>
   <p class="sub" id="sub"></p>
 
-  <div class="row" style="margin-bottom:1rem">
+  <div class="row" style="margin-bottom:1rem;justify-content:space-between">
     <button id="btn-assistant" type="button">🎙️ Talk to your assistant</button>
+    <button id="btn-logout" class="ghost" type="button">Log out</button>
   </div>
   <p class="status" id="st-assistant"></p>
 
@@ -287,25 +281,37 @@ export const PAGE = /* html */ `<!doctype html>
     <div class="row" style="margin-top:.7rem"><button id="btn-settings">Save</button></div>
     <div class="status" id="st-settings"></div>
   </section>
+
+  <section>
+    <h2>Login</h2>
+    <p class="note">Change the password you use to log in.</p>
+    <label>Current password</label><input id="pw-current" type="password" autocomplete="current-password">
+    <label>New password</label><input id="pw-new" type="password" autocomplete="new-password">
+    <div class="row" style="margin-top:.7rem"><button id="btn-pw">Change password</button></div>
+    <div class="status" id="st-pw"></div>
+  </section>
 </div>
 
 <script>
 (function () {
   var parts = location.pathname.split('/');
   var CID = parts[parts.length - 1];
-  var KEY = new URLSearchParams(location.search).get('key');
   var BASE = location.origin;
 
-  el('btn-export-csv').href = BASE + '/api/creators/' + CID + '/prospects.csv?key=' + encodeURIComponent(KEY);
+  el('btn-export-csv').href = BASE + '/api/creators/' + CID + '/prospects.csv';
 
+  // No more ?key=/Authorization header — the browser sends the httpOnly
+  // session cookie automatically on every same-origin request. That's the
+  // whole point of a login over the old scheme: nothing for page JS to
+  // even hold onto.
   function api(path, opts) {
     opts = opts || {};
-    var url = BASE + path + (path.indexOf('?') === -1 ? '?' : '&') + 'key=' + encodeURIComponent(KEY);
-    return fetch(url, {
+    return fetch(BASE + path, {
       method: opts.method || 'GET',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
+      headers: { 'Content-Type': 'application/json' },
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     }).then(function (r) {
+      if (r.status === 401) { location.href = '/login?next=' + encodeURIComponent(location.pathname); throw new Error('Not logged in.'); }
       return r.json().catch(function () { return {}; }).then(function (j) {
         if (!r.ok) throw new Error(j.error || j.detail || ('HTTP ' + r.status));
         return j;
@@ -411,6 +417,10 @@ export const PAGE = /* html */ `<!doctype html>
     api('/api/creators/' + CID + '/assistant/link', { method: 'POST' })
       .then(function (d) { show('st-assistant', 'ok', 'Opening…'); window.open(d.url, '_blank'); })
       .catch(function (e) { show('st-assistant', 'err', e.message); });
+  };
+
+  el('btn-logout').onclick = function () {
+    fetch(BASE + '/logout', { method: 'POST' }).then(function () { location.href = '/login'; });
   };
 
   // ---- youtube
@@ -819,6 +829,21 @@ export const PAGE = /* html */ `<!doctype html>
       teaching_style: el('s-style').value.trim(),
     }}).then(function () { show('st-settings', 'ok', 'Saved.'); return loadOverview(); })
       .catch(function (e) { show('st-settings', 'err', e.message); });
+  };
+
+  el('btn-pw').onclick = function () {
+    var current = el('pw-current').value;
+    var next = el('pw-new').value;
+    if (!current || !next) return show('st-pw', 'err', 'Fill in both fields.');
+    if (next.length < 8) return show('st-pw', 'err', 'New password should be at least 8 characters.');
+    show('st-pw', 'busy', 'Saving…');
+    api('/api/creators/' + CID + '/login', { method: 'PATCH', body: { current_password: current, new_password: next } })
+      .then(function () {
+        show('st-pw', 'ok', 'Password changed.');
+        el('pw-current').value = '';
+        el('pw-new').value = '';
+      })
+      .catch(function (e) { show('st-pw', 'err', e.message); });
   };
 
   addSource();

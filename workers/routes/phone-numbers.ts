@@ -4,15 +4,20 @@ import { wrapD1 } from '../db/d1-adapter.js';
 import { id, now } from '../../src/util/ids.js';
 import type { Creator } from '../../src/domain/types.js';
 import { createPhoneNumber, XaiApiError } from '../xai/client.js';
+import { checkCreatorAccess, creatorIdFromPath } from '../auth/require-creator.js';
 
 export const phoneNumberRoute = new Hono<{ Bindings: Env }>();
 
 phoneNumberRoute.use('/api/*', async (c, next) => {
-  const token = c.env.ADMIN_TOKEN;
-  if (!token) return c.json({ error: 'ADMIN_TOKEN is not configured' }, 503);
-  const header = c.req.header('Authorization')?.replace(/^Bearer\s+/i, '');
-  const query = c.req.query('key');
-  if (header !== token && query !== token) return c.json({ error: 'unauthorized' }, 401);
+  const creatorId = creatorIdFromPath(c.req.path);
+  if (creatorId) {
+    if (!(await checkCreatorAccess(c, creatorId))) return c.json({ error: 'unauthorized' }, 401);
+  } else {
+    const token = c.env.ADMIN_TOKEN;
+    if (!token) return c.json({ error: 'ADMIN_TOKEN is not configured' }, 503);
+    const header = c.req.header('Authorization')?.replace(/^Bearer\s+/i, '');
+    if (header !== token && c.req.query('key') !== token) return c.json({ error: 'unauthorized' }, 401);
+  }
   await next();
 });
 

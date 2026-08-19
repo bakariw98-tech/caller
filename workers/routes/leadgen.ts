@@ -13,14 +13,35 @@ import { mintAssistantToken, listAssistantKeys, revokeAssistantTokenByHash } fro
 import { extractOfferDetails } from '../leadgen/offer-extract.js';
 import { getTranscript } from '../youtube/client.js';
 import { toCsv } from '../leadgen/csv.js';
+import { checkCreatorAccess, creatorIdFromPath } from '../auth/require-creator.js';
+import { hashPassword, verifyPassword } from '../auth/password.js';
 
 export const leadgenRoute = new Hono<{ Bindings: Env }>();
 
+// Not part of the product surface (see its own doc comment further down) —
+// costs real per-call transcriptapi.com credit and isn't wired into any
+// dashboard button, so it stays admin-only even though it's :id-scoped
+// like everything else below.
+const ADMIN_ONLY_PATHS = [/\/debug-search-transcripts$/];
+
+/**
+ * Every route below is scoped to one creator by its own :id param, so the
+ * check is creator-scoped too — see workers/auth/require-creator.ts's doc
+ * comment for what changed from the old bare ADMIN_TOKEN compare. Routes
+ * with no :id param (e.g. /api/leadgen/simulate) fall back to admin-only,
+ * matching how they always behaved.
+ */
 leadgenRoute.use('/api/*', async (c, next) => {
-  const token = c.env.ADMIN_TOKEN;
-  if (!token) return c.json({ error: 'ADMIN_TOKEN is not configured' }, 503);
-  const header = c.req.header('Authorization')?.replace(/^Bearer\s+/i, '');
-  if (header !== token && c.req.query('key') !== token) return c.json({ error: 'unauthorized' }, 401);
+  const creatorId = creatorIdFromPath(c.req.path);
+  const adminOnly = ADMIN_ONLY_PATHS.some((re) => re.test(c.req.path));
+  if (creatorId && !adminOnly) {
+    if (!(await checkCreatorAccess(c, creatorId))) return c.json({ error: 'unauthorized' }, 401);
+  } else {
+    const token = c.env.ADMIN_TOKEN;
+    if (!token) return c.json({ error: 'ADMIN_TOKEN is not configured' }, 503);
+    const header = c.req.header('Authorization')?.replace(/^Bearer\s+/i, '');
+    if (header !== token && c.req.query('key') !== token) return c.json({ error: 'unauthorized' }, 401);
+  }
   await next();
 });
 
@@ -699,6 +720,56 @@ leadgenRoute.delete('/api/creators/:id/mcp-keys/:tokenHash', async (c) => {
   const db = wrapD1(c.env.DB);
   const revoked = await revokeAssistantTokenByHash(db, c.req.param('id'), c.req.param('tokenHash'));
   return c.json({ revoked });
+});
+
+/**
+ * One route, two callers, deliberately (see the plan this shipped from):
+ *   - The creator's own session: self-service password change. Requires
+ *     current_password and verifies it server-side before accepting
+ *     new_password — a valid session alone isn't enough to silently
+ *     rewrite a password, the same discipline any real login screen has.
+ *   - The admin override: the operator setting/resetting a creator's
+ *     login_email + an initial or replacement password, no current
+ *     password needed (that's the whole point of the override — it's for
+ *     when a creator can't log in themselves yet or is locked out).
+ * The outer middleware already confirmed one of the two applies; this
+ * route re-resolves which one specifically to pick the right behavior.
+ */
+leadgenRoute.patch('/api/creators/:id/login', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const access = await checkCreatorAccess(c, creatorId);
+  const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+
+  if (access === 'admin') {
+    const email = String(b.login_email ?? '').trim().toLowerCase();
+    const password = String(b.new_password ?? '');
+    if (!email || !email.includes('@')) return c.json({ error: 'A real login_email is required.' }, 400);
+    if (password.length < 8) return c.json({ error: 'new_password must be at least 8 characters.' }, 400);
+    try {
+      await db
+        .prepare('UPDATE creators SET login_email = ?, password_hash = ? WHERE id = ?')
+        .run(email, hashPassword(password), creatorId);
+    } catch (err) {
+      // The partial unique index on login_email is what actually throws here.
+      return c.json({ error: `Could not set login: ${err instanceof Error ? err.message : String(err)}` }, 409);
+    }
+    return c.json({ ok: true });
+  }
+
+  // access === 'session' — self-service change, the only path a creator's
+  // own dashboard actually calls.
+  const current = String(b.current_password ?? '');
+  const next = String(b.new_password ?? '');
+  if (!current || !next) return c.json({ error: 'current_password and new_password are both required.' }, 400);
+  if (next.length < 8) return c.json({ error: 'New password must be at least 8 characters.' }, 400);
+
+  const row = await db.prepare('SELECT password_hash FROM creators WHERE id = ?').get<{ password_hash: string | null }>(creatorId);
+  if (!row || !verifyPassword(current, row.password_hash)) {
+    return c.json({ error: 'Current password is wrong.' }, 401);
+  }
+  await db.prepare('UPDATE creators SET password_hash = ? WHERE id = ?').run(hashPassword(next), creatorId);
+  return c.json({ ok: true });
 });
 
 leadgenRoute.patch('/api/creators/:id/settings', async (c) => {

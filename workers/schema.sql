@@ -770,3 +770,30 @@ CREATE TABLE IF NOT EXISTS mcp_assistant_sessions (
   created_at   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_assistant_sessions_creator ON mcp_assistant_sessions(creator_id);
+
+-- A real per-creator login, replacing the single platform-wide ADMIN_TOKEN
+-- for creator-facing surfaces (the dashboard, the leadgen API, phone
+-- numbers, Gmail connect). Both nullable: a creator with neither set yet
+-- simply can't log themselves in — the ADMIN_TOKEN operator override
+-- still reaches them, same as before this existed. login_email is UNIQUE
+-- so the login form can look a creator up by it alone, same as any normal
+-- email+password login.
+ALTER TABLE creators ADD COLUMN login_email TEXT;
+ALTER TABLE creators ADD COLUMN password_hash TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_creators_login_email ON creators(login_email) WHERE login_email IS NOT NULL;
+
+-- A human login session — the fourth appearance of the same "mint a
+-- random token, store only its keyed hash, resolve by re-hashing" pattern
+-- mcp_sessions/mcp_qual_sessions/mcp_assistant_sessions already use, this
+-- time for a browser session cookie rather than a machine credential.
+-- Deliberately hashed with its OWN secret (SESSION_SECRET, not
+-- MCP_TOKEN_SECRET): a bug that forges one credential family should not
+-- also forge the other.
+CREATE TABLE IF NOT EXISTS creator_sessions (
+  token_hash TEXT PRIMARY KEY,
+  creator_id TEXT NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+  expires_at INTEGER NOT NULL,
+  revoked_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_creator_sessions_creator ON creator_sessions(creator_id);

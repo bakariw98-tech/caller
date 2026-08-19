@@ -4,6 +4,7 @@ import { wrapD1 } from '../db/d1-adapter.js';
 import { id, now, hmacHex, safeEqual } from '../../src/util/ids.js';
 import { buildConsentUrl, exchangeCode, getAccessToken, getProfile } from '../email/gmail.js';
 import { pollAllConnections } from '../email/poll.js';
+import { checkCreatorAccess } from '../auth/require-creator.js';
 
 export const emailConnectRoute = new Hono<{ Bindings: Env }>();
 
@@ -23,10 +24,7 @@ function stateFor(secret: string, creatorId: string): string {
  * to attach someone else's Gmail account to another creator's connection.
  */
 emailConnectRoute.get('/api/creators/:id/email/connect', async (c) => {
-  const token = c.env.ADMIN_TOKEN;
-  if (!token) return c.json({ error: 'ADMIN_TOKEN is not configured' }, 503);
-  const header = c.req.header('Authorization')?.replace(/^Bearer\s+/i, '');
-  if (header !== token && c.req.query('key') !== token) return c.json({ error: 'unauthorized' }, 401);
+  if (!(await checkCreatorAccess(c, c.req.param('id')))) return c.json({ error: 'unauthorized' }, 401);
 
   const db = wrapD1(c.env.DB);
   const creatorId = c.req.param('id');
