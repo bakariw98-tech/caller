@@ -1,7 +1,7 @@
 import type { SqlDb } from '../db/types.js';
 import type { Creator } from '../../src/domain/types.js';
 import { chatCompletionJson, type ChatUsage } from '../xai/client.js';
-import { loadKnowledge, selectKnowledgeHybrid } from './reply.js';
+import { loadKnowledge, selectKnowledgeHybrid, type KnowledgeRow } from './reply.js';
 import { embedQuery, type AiBinding } from './embeddings.js';
 
 export interface OfferExtractionDraft {
@@ -84,10 +84,15 @@ function buildExtractionInstructions(creator: Creator, offerName: string): strin
     'generalize from how this creator talks about OTHER offers or topics — only what is said about this specific',
     'one counts.',
     '',
-    'If the material does not clearly discuss this offer by name (or an unmistakable reference to it), set found',
-    'to false and leave every other field out entirely. A near-miss on a similarly-named or related offer is not',
-    'a match — do not guess. Guessing here is worse than leaving a field blank: whatever you fill in becomes',
-    'something an AI states as fact to a real prospect on a live sales call.',
+    'A trivial variation in how the name is written — plural vs singular, spacing, capitalization, "the" added or',
+    'dropped, a minor misspelling — is still the SAME offer if the material is unmistakably talking about that one',
+    'thing. Do not reject a match over wording like that; found should still be true.',
+    '',
+    'What genuinely means found:false is the material not discussing this offer AT ALL, or only discussing a',
+    'DIFFERENT, distinctly-named offer that merely sounds similar. That distinction — same thing worded differently',
+    'versus an actually different thing — is what you are being careful about, not exact string matching. Guessing',
+    'at a different offer\'s details is worse than leaving a field blank: whatever you fill in becomes something an',
+    'AI states as fact to a real prospect on a live sales call.',
     '',
     'Only include price_text when an actual number or range is stated somewhere in the material. Do not write',
     '"contact for pricing" or invent a plausible-sounding number — omit the field instead.',
@@ -99,6 +104,31 @@ function buildExtractionInstructions(creator: Creator, offerName: string): strin
 
 function emptyDraft(): OfferExtractionDraft {
   return { ...EMPTY_DRAFT };
+}
+
+/**
+ * A literal, case-insensitive substring match against an offer's own
+ * name — deliberately separate from, and stronger than, the hybrid
+ * retrieval used for general Q&A. That retrieval's keyword signal is
+ * exact-token matching with no stemming (see reply.ts's tokenize()), so
+ * a query for "Sandcastle" gets NO keyword boost on a passage that only
+ * ever says "Sandcastles" — one token, not the other. For general
+ * questions that is a reasonable trade; for an offer NAME lookup it is
+ * exactly the case that matters most, so this guarantees any passage
+ * that actually names the offer is included regardless of where hybrid
+ * ranking would have put it. Checks both the name as given and its
+ * simple plural/singular counterpart (trailing 's' added or stripped),
+ * which covers the exact failure observed live — a real offer whose
+ * material said "Sandcastles" was invisible to a "Sandcastle" query.
+ */
+export function findLiteralNameMatches(rows: KnowledgeRow[], offerName: string): KnowledgeRow[] {
+  const name = offerName.trim().toLowerCase();
+  if (!name) return [];
+  const variants = [name, name.endsWith('s') ? name.slice(0, -1) : `${name}s`];
+  return rows.filter((r) => {
+    const haystack = `${r.problem} ${r.guidance} ${r.who_for ?? ''}`.toLowerCase();
+    return variants.some((v) => v.length > 2 && haystack.includes(v));
+  });
 }
 
 /**
@@ -139,7 +169,13 @@ export async function extractOfferDetails(params: {
   // A wider net than the usual reply retrieval (6): an offer might be
   // discussed across several different videos/passages, and missing one
   // means an incomplete draft rather than a wrong one — the cheaper failure.
-  const relevant = selectKnowledgeHybrid(all, params.offerName, queryVector, 15);
+  const hybrid = selectKnowledgeHybrid(all, params.offerName, queryVector, 15);
+  // Literal name matches are force-included on top of hybrid ranking, not
+  // instead of it — see findLiteralNameMatches()'s own doc comment for why
+  // this second pass exists at all.
+  const literal = findLiteralNameMatches(all, params.offerName);
+  const seen = new Set(hybrid.map((r) => r.id));
+  const relevant = [...hybrid, ...literal.filter((r) => !seen.has(r.id))];
   if (!relevant.length) return { draft: emptyDraft(), usage: {} };
 
   const user = relevant

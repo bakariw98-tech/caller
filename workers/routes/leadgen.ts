@@ -10,6 +10,7 @@ import { loadOffers, loadFullOffers, loadKnowledge, keywordScores, SEMANTIC_FLOO
 import { syncChannel } from '../youtube/ingest.js';
 import { startWebQualificationCall } from '../telephony/qualification-call.js';
 import { extractOfferDetails } from '../leadgen/offer-extract.js';
+import { getTranscript } from '../youtube/client.js';
 import { toCsv } from '../leadgen/csv.js';
 
 export const leadgenRoute = new Hono<{ Bindings: Env }>();
@@ -97,6 +98,41 @@ leadgenRoute.post('/api/creators/:id/offers/extract', async (c) => {
   });
 
   return c.json({ draft, usage });
+});
+
+/**
+ * DIAGNOSTIC — not part of the product surface, admin-gated like
+ * everything else in this file. Re-fetches specific raw transcripts
+ * (which are never persisted after ingestion — see workers/youtube/
+ * ingest.ts, the knowledge base only keeps the LLM's distilled
+ * problem/guidance extraction) and searches them literally for a term,
+ * to tell apart "genuinely not discussed" from "discussed, but the
+ * ingestion extraction never captured this specific mention." Costs one
+ * transcriptapi.com credit per video_id given.
+ */
+leadgenRoute.post('/api/creators/:id/debug-search-transcripts', async (c) => {
+  const b = (await c.req.json().catch(() => ({}))) as { query?: string; video_ids?: string[] };
+  const query = String(b.query ?? '').trim().toLowerCase();
+  const videoIds = Array.isArray(b.video_ids) ? b.video_ids : [];
+  if (!query || !videoIds.length) return c.json({ error: 'query and video_ids are required' }, 400);
+
+  const results = [];
+  for (const videoId of videoIds) {
+    try {
+      const t = await getTranscript({ apiKey: c.env.TRANSCRIPT_API_KEY }, videoId);
+      const full = t.transcript.map((s) => s.text).join(' ');
+      const idx = full.toLowerCase().indexOf(query);
+      results.push({
+        video_id: videoId,
+        found: idx !== -1,
+        excerpt: idx !== -1 ? full.slice(Math.max(0, idx - 200), idx + 300) : null,
+        length: full.length,
+      });
+    } catch (err) {
+      results.push({ video_id: videoId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return c.json({ results });
 });
 
 /**
