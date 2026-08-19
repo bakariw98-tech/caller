@@ -262,6 +262,23 @@ export const PAGE = /* html */ `<!doctype html>
   </section>
 
   <section>
+    <h2>Connect your own agent</h2>
+    <p class="note">The same assistant you can talk to above, reachable from Claude Desktop or any MCP-capable agent of
+      your own. A key is shown to you exactly once — copy it before closing this. <b>Treat it like a password:</b> it
+      can read and change everything above, including sending email as you, for as long as it exists. Revoke a key any
+      time you no longer recognize it.</p>
+    <label>Label (so you can tell keys apart later)</label>
+    <input id="mcpkey-label" placeholder="e.g. my laptop, Claude Desktop">
+    <div class="row" style="margin-top:.6rem"><button id="btn-mcpkey-create" class="ghost" type="button">Create a key</button></div>
+    <div class="status" id="st-mcpkey"></div>
+    <div id="mcpkey-new" style="display:none;margin-top:.7rem">
+      <label>Server URL</label><input id="mcpkey-url" readonly>
+      <label>Key — copy this now, it will not be shown again</label><input id="mcpkey-token" readonly>
+    </div>
+    <div id="mcpkey-list" style="margin-top:.8rem"></div>
+  </section>
+
+  <section>
     <h2>Voice</h2>
     <p class="note">How it writes. Changes apply to the next reply.</p>
     <label>Name it signs as</label><input id="s-coach">
@@ -753,6 +770,46 @@ export const PAGE = /* html */ `<!doctype html>
     });
   }
 
+  // ---- your own agent (Part 3: creator-scoped MCP keys)
+  function loadMcpKeys() {
+    return api('/api/creators/' + CID + '/mcp-keys').then(function (d) {
+      var box = el('mcpkey-list');
+      var keys = d.keys || [];
+      if (!keys.length) { box.innerHTML = '<p class="note">No keys yet.</p>'; return; }
+      box.innerHTML = '';
+      keys.forEach(function (k) {
+        var n = document.createElement('div');
+        n.className = 'item';
+        var when = new Date(k.created_at * 1000).toLocaleDateString();
+        var used = k.last_used_at ? new Date(k.last_used_at * 1000).toLocaleString() : 'never used';
+        n.innerHTML =
+          '<h3>' + esc(k.label || '(no label)') + (k.revoked_at ? ' <span class="pill off">revoked</span>' : ' <span class="pill on">active</span>') + '</h3>' +
+          '<p class="note">Created ' + when + ' · Last used: ' + esc(used) + '</p>' +
+          (k.revoked_at ? '' : '<div class="row" style="margin-top:.5rem"><button class="danger key-revoke" type="button">Revoke</button></div>');
+        var revokeBtn = n.querySelector('.key-revoke');
+        if (revokeBtn) revokeBtn.onclick = function () {
+          if (!confirm('Revoke "' + (k.label || 'this key') + '"? Anything using it will stop working immediately.')) return;
+          api('/api/creators/' + CID + '/mcp-keys/' + encodeURIComponent(k.token_hash), { method: 'DELETE' }).then(loadMcpKeys);
+        };
+        box.appendChild(n);
+      });
+    });
+  }
+
+  el('btn-mcpkey-create').onclick = function () {
+    show('st-mcpkey', 'busy', 'Creating…');
+    api('/api/creators/' + CID + '/mcp-keys', { method: 'POST', body: { label: el('mcpkey-label').value.trim() } })
+      .then(function (d) {
+        show('st-mcpkey', 'ok', 'Copy this now — it will not be shown again.');
+        el('mcpkey-url').value = d.server_url;
+        el('mcpkey-token').value = d.token;
+        el('mcpkey-new').style.display = 'block';
+        el('mcpkey-label').value = '';
+        return loadMcpKeys();
+      })
+      .catch(function (e) { show('st-mcpkey', 'err', e.message); });
+  };
+
   // ---- settings
   el('btn-settings').onclick = function () {
     show('st-settings', 'busy', 'Saving…');
@@ -765,7 +822,7 @@ export const PAGE = /* html */ `<!doctype html>
   };
 
   addSource();
-  loadOverview().then(loadOffers).then(loadKnowledge).then(loadProspects).then(loadYoutube)
+  loadOverview().then(loadOffers).then(loadKnowledge).then(loadProspects).then(loadYoutube).then(loadMcpKeys)
     .catch(function (e) { el('sub').textContent = 'Could not load: ' + e.message; });
 })();
 </script>

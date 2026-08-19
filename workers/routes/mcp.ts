@@ -58,25 +58,18 @@ function error(reqId: string | number | null | undefined, code: number, message:
 mcpRoute.post('/mcp', async (c) => {
   const body = (await c.req.json().catch(() => undefined)) as JsonRpcRequest | JsonRpcRequest[] | undefined;
 
-  // Diagnostic: full incoming header set, visible via `wrangler tail`, to see
-  // exactly what the console-managed agent path sends — this is genuinely
-  // undocumented territory (see chat), and the fastest way to a real answer
-  // is watching a real request rather than guessing from docs. Authorization
-  // is redacted to its first 12 chars so a real token never lands in logs.
-  const headerDump: Record<string, string> = {};
-  c.req.raw.headers.forEach((v, k) => {
-    headerDump[k] = k.toLowerCase() === 'authorization' ? `${v.slice(0, 12)}…` : v;
-  });
-  // JSON.stringify rather than passing the object to console.log directly —
-  // Node's default object inspection truncates nested objects (like _meta,
-  // exactly where caller context would live) as "[Object]" past a shallow
-  // depth. Full text avoids losing that.
-  console.log(
-    'MCP request',
-    JSON.stringify({ method: c.req.method, query: c.req.query(), headers: headerDump, body }, null, 2),
-  );
-
   if (!body) return c.json(error(null, -32700, 'Empty request body'), 400);
+
+  // Was a full dump of every header and the complete JSON body, added to
+  // reverse-engineer what xAI's console-managed agent path actually sends —
+  // it did that job. Trimmed to method + tool name once third-party agents
+  // (Part 3, creator-scoped MCP keys) could reach this endpoint: a
+  // qualification call's discovery signals, and now an assistant call's
+  // knowledge/offer edits and eventually real email text, would otherwise
+  // sit in plaintext logs indefinitely. This still shows exactly which tool
+  // fired and roughly when, without the arguments.
+  const batchForLog = Array.isArray(body) ? body : [body];
+  console.log('MCP request', JSON.stringify(batchForLog.map((r) => ({ method: r.method, tool: r.params?.name }))));
 
   // Console-managed tool config may only expose a URL field, not custom
   // headers — support the token as a query param too so `?token=...` works

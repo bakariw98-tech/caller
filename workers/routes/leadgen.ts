@@ -9,7 +9,7 @@ import { embedPassages, embedQuery, embeddingTextForItem, encodeVector, decodeVe
 import { loadOffers, loadFullOffers, loadKnowledge, keywordScores, SEMANTIC_FLOOR } from '../leadgen/reply.js';
 import { syncChannel } from '../youtube/ingest.js';
 import { startWebQualificationCall } from '../telephony/qualification-call.js';
-import { mintAssistantToken } from '../mcp/auth.js';
+import { mintAssistantToken, listAssistantKeys, revokeAssistantTokenByHash } from '../mcp/auth.js';
 import { extractOfferDetails } from '../leadgen/offer-extract.js';
 import { getTranscript } from '../youtube/client.js';
 import { toCsv } from '../leadgen/csv.js';
@@ -662,6 +662,43 @@ leadgenRoute.post('/api/creators/:id/assistant/link', async (c) => {
   const token = await mintAssistantToken(db, c.env.MCP_TOKEN_SECRET, { creatorId, ttlSeconds: 3600 });
   const url = `${c.env.PUBLIC_BASE_URL}/assistant/${creatorId}?token=${encodeURIComponent(token)}`;
   return c.json({ url });
+});
+
+/**
+ * Part 3: a creator's own agent, connected directly — the same tool set
+ * as "Talk to your assistant" above, reached without this app's voice UI
+ * at all. Deliberately a durable credential (ttlSeconds: null) rather
+ * than the 1h session mint just above: a key pasted into Claude Desktop
+ * or similar should not silently stop working mid-use. See
+ * mintAssistantToken()'s own doc comment for why this is the most
+ * dangerous credential in this codebase and what mitigates that.
+ */
+leadgenRoute.post('/api/creators/:id/mcp-keys', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const creator = await db.prepare('SELECT id FROM creators WHERE id = ?').get<{ id: string }>(creatorId);
+  if (!creator) return c.json({ error: 'creator not found' }, 404);
+
+  const b = (await c.req.json().catch(() => ({}))) as { label?: string };
+  const label = String(b.label ?? '').trim() || null;
+
+  const token = await mintAssistantToken(db, c.env.MCP_TOKEN_SECRET, { creatorId, ttlSeconds: null, label });
+  // The only moment this plaintext exists outside the request that
+  // generated it — never logged, never stored, never returned again.
+  return c.json({ token, server_url: `${c.env.PUBLIC_BASE_URL}/mcp` }, 201);
+});
+
+/** Labels, timestamps, and hashes only — never a usable credential. */
+leadgenRoute.get('/api/creators/:id/mcp-keys', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const keys = await listAssistantKeys(db, c.req.param('id'));
+  return c.json({ keys });
+});
+
+leadgenRoute.delete('/api/creators/:id/mcp-keys/:tokenHash', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const revoked = await revokeAssistantTokenByHash(db, c.req.param('id'), c.req.param('tokenHash'));
+  return c.json({ revoked });
 });
 
 leadgenRoute.patch('/api/creators/:id/settings', async (c) => {

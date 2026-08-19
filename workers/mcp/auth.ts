@@ -144,6 +144,44 @@ export async function revokeAssistantToken(db: SqlDb, tokenSecret: string, token
     .run(now(), hmacHex(tokenSecret, token));
 }
 
+/**
+ * Revokes a durable key by its HASH rather than its plaintext — the
+ * dashboard's "Revoke" button has only ever seen the hash (the plaintext
+ * was shown once, at mint time, and was never stored anywhere including
+ * here). token_hash is a keyed HMAC, not the secret itself, so returning
+ * and accepting it back is safe: it cannot be reversed to the plaintext
+ * or used on its own to authenticate. creatorId is required in the WHERE
+ * clause as defense in depth — the dashboard route already scopes by
+ * creator, but a revoke call must never be reachable across creators even
+ * if that scoping were ever removed by mistake.
+ */
+export async function revokeAssistantTokenByHash(db: SqlDb, creatorId: string, tokenHash: string): Promise<boolean> {
+  const res = await db
+    .prepare('UPDATE mcp_assistant_sessions SET revoked_at = ? WHERE token_hash = ? AND creator_id = ? AND revoked_at IS NULL')
+    .run(now(), tokenHash, creatorId);
+  return res.changes > 0;
+}
+
+export interface AssistantKeySummary {
+  token_hash: string;
+  label: string | null;
+  created_at: number;
+  last_used_at: number | null;
+  revoked_at: number | null;
+}
+
+/** Durable ("paste into your own agent") keys only — a short-lived voice session (expires_at set) never shows up here. */
+export async function listAssistantKeys(db: SqlDb, creatorId: string): Promise<AssistantKeySummary[]> {
+  return db
+    .prepare(
+      `SELECT token_hash, label, created_at, last_used_at, revoked_at
+         FROM mcp_assistant_sessions
+        WHERE creator_id = ? AND expires_at IS NULL
+        ORDER BY created_at DESC`,
+    )
+    .all<AssistantKeySummary>(creatorId);
+}
+
 /** Tries mcp_sessions (coach calls), then mcp_qual_sessions (qualification calls), then mcp_assistant_sessions — the token spaces never overlap. */
 export async function resolveToken(
   db: SqlDb,
