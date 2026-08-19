@@ -38,4 +38,23 @@ describe('ASSISTANT_TOOL_DEFINITIONS', () => {
     const names = ASSISTANT_TOOL_DEFINITIONS.map((d) => d.name);
     expect(new Set(names).size).toBe(names.length);
   });
+
+  // The load-bearing honesty guard for email_prospect isn't just prose in
+  // the description — it's structural: the schema has no address-shaped
+  // field at all, additionalProperties is false, so a model literally
+  // cannot pass one through even if it tried. This locks that in at the
+  // schema level, not just the description text.
+  it('email_prospect accepts a prospect id but never an address', () => {
+    const def = ASSISTANT_TOOL_DEFINITIONS.find((d) => d.name === 'email_prospect');
+    expect(def).toBeTruthy();
+    const props = Object.keys((def!.inputSchema as { properties: Record<string, unknown> }).properties);
+    expect(props).toContain('prospect_id');
+    expect(props.some((p) => /email|address|to\b/i.test(p))).toBe(false);
+    expect((def!.inputSchema as { additionalProperties: boolean }).additionalProperties).toBe(false);
+  });
+
+  it('email_prospect says this is irreversible and to confirm first', () => {
+    const def = ASSISTANT_TOOL_DEFINITIONS.find((d) => d.name === 'email_prospect');
+    expect(def!.description.toLowerCase()).toMatch(/irreversible|confirm|yes/);
+  });
 });

@@ -7,6 +7,7 @@ import { indexKnowledge } from '../routes/leadgen.js';
 import { extractOfferDetails } from '../leadgen/offer-extract.js';
 import { syncChannel } from '../youtube/ingest.js';
 import { id as newId, now } from '../../src/util/ids.js';
+import { getAccessToken, buildRawMessage, sendMessage } from '../email/gmail.js';
 
 /**
  * The creator's own assistant — the tool set behind both "talk to it from
@@ -220,6 +221,27 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'email_prospect',
+    description:
+      'Sends a real email to one of the creator\'s own leads, from the creator\'s connected inbox. You write the ' +
+      'subject and body yourself, in your own words — but you never type an email address. Pass the prospect_id ' +
+      'from list_prospects or search results; the actual address is resolved from the creator\'s own records, ' +
+      'never from anything you write. Every fact you put in the email (an offer name, a price, a link) has to ' +
+      'come from a tool result in this conversation, never invented. This is irreversible the moment it sends — ' +
+      'read back who it is going to and what it says, in plain language, and get a clear spoken yes before ' +
+      'calling this.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prospect_id: { type: 'string', description: 'The prospect id, from list_prospects or search — never a typed-out address.' },
+        subject: { type: 'string' },
+        body: { type: 'string', description: 'Plain text. Written by you, but every fact in it must be grounded in an earlier tool result.' },
+      },
+      required: ['prospect_id', 'subject', 'body'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'connect_youtube',
     description:
       "Connects (or re-syncs) the creator's YouTube channel by handle or URL so every video becomes searchable " +
@@ -273,6 +295,8 @@ export async function callAssistantTool(
       return setVoiceEscalation(ctx, args);
     case 'connect_youtube':
       return connectYoutube(ctx, args);
+    case 'email_prospect':
+      return emailProspect(ctx, args);
     default:
       return { data: { error: `Unknown tool: ${name}` }, isError: true };
   }
@@ -622,4 +646,94 @@ async function connectYoutube(ctx: AssistantToolContext, args: Record<string, un
   } catch (err) {
     return { data: { error: err instanceof Error ? err.message : String(err) }, isError: true };
   }
+}
+
+/**
+ * Sends a real email as the creator, to one of their own leads.
+ *
+ * The honesty gate that matters most here: the model supplies a
+ * prospect_id, never an address. Everything after that resolves purely
+ * from the database — the recipient's real stored email, the creator's
+ * connected inbox and display name — exactly the discipline
+ * findOfferByName() uses in qual-tools.ts to refuse a model's own
+ * description of an offer in favor of the real row. There is no code path
+ * here that ever puts a model-typed string into the `to:` header.
+ */
+async function emailProspect(ctx: AssistantToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+  const prospectId = typeof args.prospect_id === 'string' ? args.prospect_id.trim() : '';
+  const subject = typeof args.subject === 'string' ? args.subject.trim() : '';
+  const body = typeof args.body === 'string' ? args.body.trim() : '';
+  if (!prospectId || !subject || !body) {
+    return { data: { error: 'prospect_id, subject, and body are all required.' }, isError: true };
+  }
+
+  const prospect = await ctx.db
+    .prepare('SELECT id, email, name FROM prospects WHERE id = ? AND creator_id = ?')
+    .get<{ id: string; email: string; name: string | null }>(prospectId, ctx.session.creator_id);
+  if (!prospect) {
+    return {
+      data: { error: 'No lead with that id for this creator. Look them up with list_prospects first — do not guess an id or an address.' },
+      isError: true,
+    };
+  }
+
+  const conn = await ctx.db
+    .prepare('SELECT gmail_address, refresh_token FROM email_connections WHERE creator_id = ?')
+    .get<{ gmail_address: string; refresh_token: string }>(ctx.session.creator_id);
+  if (!conn) {
+    return { data: { error: 'No inbox is connected for this creator yet — that needs a Google login clicked through on the dashboard, not something you can do for them.' }, isError: true };
+  }
+
+  const creator = await ctx.db.prepare('SELECT coach_name FROM creators WHERE id = ?').get<{ coach_name: string }>(ctx.session.creator_id);
+
+  // Threads into whatever conversation already exists with this lead —
+  // the most recent message of any kind — rather than starting a
+  // disconnected new thread out of nowhere. A genuinely first-ever
+  // message to them just sends as a fresh thread.
+  const priorMsg = await ctx.db
+    .prepare(
+      `SELECT gmail_message_id, gmail_thread_id FROM prospect_messages
+        WHERE prospect_id = ? AND gmail_thread_id IS NOT NULL
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get<{ gmail_message_id: string | null; gmail_thread_id: string | null }>(prospectId);
+
+  let accessToken: string;
+  try {
+    accessToken = await getAccessToken(
+      { clientId: ctx.env.GOOGLE_OAUTH_CLIENT_ID, clientSecret: ctx.env.GOOGLE_OAUTH_CLIENT_SECRET },
+      conn.refresh_token,
+    );
+  } catch (err) {
+    return { data: { error: `Could not access the connected inbox: ${err instanceof Error ? err.message : String(err)}` }, isError: true };
+  }
+
+  const raw = buildRawMessage({
+    to: prospect.email,
+    from: conn.gmail_address,
+    fromName: creator?.coach_name ?? null,
+    subject,
+    bodyText: body,
+    inReplyTo: priorMsg?.gmail_message_id ?? null,
+    references: priorMsg?.gmail_message_id ?? null,
+  });
+
+  try {
+    await sendMessage(accessToken, raw, priorMsg?.gmail_thread_id ?? undefined);
+  } catch (err) {
+    return { data: { error: `The send failed: ${err instanceof Error ? err.message : String(err)}` }, isError: true };
+  }
+
+  // Confirms only what actually happened — the resolved address (never
+  // echoed back from the model's own input) and the subject, so the
+  // model's spoken confirmation to the creator is itself grounded in a
+  // tool result rather than repeating what it assumed it just sent.
+  return {
+    data: {
+      sent: true,
+      to: prospect.email,
+      to_name: prospect.name,
+      subject,
+    },
+  };
 }
