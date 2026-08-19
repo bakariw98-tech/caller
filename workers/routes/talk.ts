@@ -74,7 +74,13 @@ talkRoute.get('/talk/:callId', async (c) => {
     reasoningEffort: 'none',
     idleTimeoutMs: loadAppConfig(c.env).idleTimeoutMs,
     toolSet: QUAL_TOOL_SET,
-  });
+  }) as { session: Record<string, unknown> } & Record<string, unknown>;
+  // Explicit rather than relying on the documented default (24kHz PCM) —
+  // this only matters for a WebSocket session like this one; the SIP path
+  // never sets it at all since no audio crosses that channel. Named
+  // explicitly here rather than folded into buildSessionUpdate() itself,
+  // which the phone path also calls and must not grow a talk.ts-only field.
+  sessionUpdate.session.audio = { output: { format: { type: 'audio/pcm', rate: 24000 } } };
   const seedItem = buildSeedItem("You're on a qualification call. Greet them warmly and ask for the short code from their invite email.");
   const responseCreate = buildResponseCreate();
 
@@ -162,13 +168,25 @@ This uses your microphone.</p>
   var SAMPLE_RATE = 24000; // fixed by the API — see docs.x.ai, "24000 Hz (Default)"
   var el = { start: document.getElementById('start'), hang: document.getElementById('hang'), status: document.getElementById('status') };
   var ws = null, ended = false;
-  var micCtx = null, micStream = null, micNode = null;
-  var playCtx = null, nextPlayTime = 0;
+  var micStream = null, micNode = null;
+  // ONE shared AudioContext for both mic capture and playback, created and
+  // resumed synchronously inside the click handler below — not lazily on
+  // the first incoming audio chunk. That was the actual bug in an earlier
+  // version: a context created later, inside an async WebSocket message
+  // handler, falls outside the browser's user-gesture chain and several
+  // browsers leave it permanently 'suspended' with no error at all — audio
+  // decodes and queues fine, it just never actually plays. Creating +
+  // resuming it here, in direct response to the click, is what autoplay
+  // policies require.
+  var audioCtx = null, nextPlayTime = 0;
 
   function setStatus(s) { el.status.textContent = s; }
 
   el.start.onclick = function () {
     el.start.disabled = true;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+    nextPlayTime = audioCtx.currentTime;
+    audioCtx.resume().catch(function () {});
     connect().catch(function (e) { setStatus('Could not connect: ' + e.message); el.start.disabled = false; });
   };
 
@@ -193,16 +211,19 @@ This uses your microphone.</p>
     return new Int16Array(bytes.buffer);
   }
 
+  var heardAudio = false;
+
   function playChunk(base64Audio) {
-    if (!playCtx) { playCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE }); nextPlayTime = playCtx.currentTime; }
+    if (!heardAudio) { heardAudio = true; setStatus('Hearing the agent — talk anytime.'); }
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(function () {});
     var pcm = int16FromBase64(base64Audio);
-    var buf = playCtx.createBuffer(1, pcm.length, SAMPLE_RATE);
+    var buf = audioCtx.createBuffer(1, pcm.length, SAMPLE_RATE);
     var ch = buf.getChannelData(0);
     for (var i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
-    var src = playCtx.createBufferSource();
+    var src = audioCtx.createBufferSource();
     src.buffer = buf;
-    src.connect(playCtx.destination);
-    var startAt = Math.max(nextPlayTime, playCtx.currentTime);
+    src.connect(audioCtx.destination);
+    var startAt = Math.max(nextPlayTime, audioCtx.currentTime);
     src.start(startAt);
     nextPlayTime = startAt + buf.duration;
   }
@@ -235,20 +256,19 @@ This uses your microphone.</p>
       }
       console.log('event', msg.type, msg);
     };
-    ws.onerror = function () { setStatus('Connection error.'); };
+    ws.onerror = function () { setStatus('Connection error — check the browser console for detail.'); };
     ws.onclose = function (evt) {
-      if (!ended) setStatus('Disconnected' + (evt.reason ? ': ' + evt.reason : '') + '.');
+      if (!ended) setStatus('Disconnected (code ' + evt.code + (evt.reason ? ': ' + evt.reason : '') + ').');
       stopMic();
     };
   }
 
   function startMic() {
-    micCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
-    var source = micCtx.createMediaStreamSource(micStream);
+    var source = audioCtx.createMediaStreamSource(micStream);
     // ScriptProcessorNode is deprecated but universally supported and
     // simple to reason about — good enough for a test tool; a real
     // product surface would move to an AudioWorklet.
-    micNode = micCtx.createScriptProcessor(4096, 1, 1);
+    micNode = audioCtx.createScriptProcessor(4096, 1, 1);
     micNode.onaudioprocess = function (evt) {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       var input = evt.inputBuffer.getChannelData(0);
@@ -262,16 +282,15 @@ This uses your microphone.</p>
     source.connect(micNode);
     // Required by some browsers for onaudioprocess to fire, even though
     // we never play the mic's own signal back — a silent gain node keeps
-    // it out of the speakers.
-    var silence = micCtx.createGain();
+    // it out of the speakers, on the SAME shared context as playback.
+    var silence = audioCtx.createGain();
     silence.gain.value = 0;
     micNode.connect(silence);
-    silence.connect(micCtx.destination);
+    silence.connect(audioCtx.destination);
   }
 
   function stopMic() {
     if (micNode) { try { micNode.disconnect(); } catch (e) {} micNode = null; }
-    if (micCtx) { try { micCtx.close(); } catch (e) {} micCtx = null; }
     if (micStream) { micStream.getTracks().forEach(function (t) { t.stop(); }); micStream = null; }
   }
 
@@ -281,6 +300,7 @@ This uses your microphone.</p>
     setStatus('Call ended.');
     el.hang.style.display = 'none';
     stopMic();
+    if (audioCtx) { try { audioCtx.close(); } catch (e) {} audioCtx = null; }
     if (ws) { try { ws.close(); } catch (e) {} }
     fetch('/talk/' + DATA.callId + '/end', { method: 'POST', headers: { Authorization: 'Bearer ' + DATA.token } }).catch(function () {});
   }
