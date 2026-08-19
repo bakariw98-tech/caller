@@ -690,7 +690,14 @@ leadgenRoute.patch('/api/creators/:id/settings', async (c) => {
  * beats twenty round trips. Only un-indexed rows are touched, so this is safe
  * to call repeatedly and cheap when there is nothing to do.
  */
-async function indexKnowledge(
+/**
+ * Exported (was module-private) so workers/mcp/assistant-tools.ts's
+ * edit_knowledge_item tool can re-embed an edited item through the exact
+ * same code path this route already uses — re-embedding is the one piece
+ * of this logic that genuinely cannot drift between the two callers
+ * without silently leaving a voice-edited item unsearchable.
+ */
+export async function indexKnowledge(
   env: Env,
   db: ReturnType<typeof wrapD1>,
   creatorId: string,

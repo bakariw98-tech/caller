@@ -161,7 +161,7 @@ async function handleRpc(env: Env, authHeader: string | undefined, rpc: JsonRpcR
           const ctx: QualToolContext = { db, session: resolved.session };
           out = await callQualTool(ctx, name, args);
         } else if (resolved.kind === 'assistant') {
-          const ctx: AssistantToolContext = { db, session: resolved.session };
+          const ctx: AssistantToolContext = { db, env, session: resolved.session };
           out = await callAssistantTool(ctx, name, args);
         } else {
           // Same fail-closed discipline as tools/list above: an unhandled
