@@ -289,6 +289,42 @@ function list(json: string): string[] {
  * leave; they leave thinking less of the creator. Every rule below exists
  * because the alternative damages someone else's reputation.
  */
+/**
+ * The hook email's teaser — sent instead of a written reply when a creator
+ * has voice qualification on and this is a prospect's first message.
+ *
+ * Deliberately given none of `buildReplyInstructions()`'s knowledge/offer
+ * context. This is not a smaller version of answering their question — the
+ * whole point of the hook is that the real conversation, the diagnosis, and
+ * the offer all happen live on the call, not here. A teaser that half-answers
+ * the question undercuts the invitation; the model has nothing to answer
+ * FROM here on purpose.
+ *
+ * The phone number and call code are never part of what the model writes —
+ * see buildHookEmailBody() for why: the same reason a link is never trusted
+ * to a model's free text anywhere else in this product.
+ */
+export function buildHookInstructions(params: { creator: Creator }): string {
+  const { creator } = params;
+  return [
+    `You are writing a short email on behalf of ${creator.business_name}. Someone who has never talked to`,
+    `${creator.business_name} before just emailed in with a real question or something they're stuck on. You`,
+    `are NOT answering it in this email — a phone call is coming next, and that call is where the actual help`,
+    `happens. Your only job here is to make them want to take that call.`,
+    '',
+    'Write 2-4 warm, specific sentences. Acknowledge what they actually wrote — quote or paraphrase the real',
+    'substance of it, so this reads like it was written by someone who read their message, not a template.',
+    'Say plainly that a quick call is the fastest way to actually get into their specific situation.',
+    '',
+    'Do not: answer their question even partially, quote a price, name a specific offer or product, or explain',
+    'how anything works. Do not write a phone number, a code, placeholder text for either, or any variation of',
+    '"click below" / "see below" — those are added afterward, by code, not by you. If you reference the call',
+    'at all, reference it as a natural next step ("want to talk it through?"), never as a set of steps to follow.',
+    '',
+    'Sign off the way a real short email from a person would — brief, no corporate closing.',
+  ].join('\n');
+}
+
 export function buildReplyInstructions(params: {
   creator: Creator;
   knowledge: KnowledgeForReply[];

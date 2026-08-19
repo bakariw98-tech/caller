@@ -10,7 +10,8 @@ import {
   sendMessage,
   HistoryGapError,
 } from './gmail.js';
-import { runLeadgenPipeline, CreatorNotFoundError } from '../leadgen/pipeline.js';
+import { CreatorNotFoundError } from '../leadgen/pipeline.js';
+import { routeInboundMessage } from '../leadgen/inbound.js';
 
 interface ConnectionRow {
   id: string;
@@ -159,7 +160,7 @@ async function pollOneConnection(
         .get(conn.creator_id, gmailId);
       if (already) continue;
 
-      const result = await runLeadgenPipeline({
+      const result = await routeInboundMessage({
         db,
         ai: env.AI,
         apiBase: env.XAI_API_BASE,
@@ -188,7 +189,17 @@ async function pollOneConnection(
         inReplyTo: inbound.messageId,
         references: inbound.references,
       });
-      await sendMessage(accessToken, raw, inbound.threadId);
+      const sent = await sendMessage(accessToken, raw, inbound.threadId);
+      // Thread-link the just-sent message to Gmail's own ids so a later
+      // follow-up (voice escalation's post-call recap, or a next-step
+      // confirmation) can reply into this same thread instead of starting a
+      // disconnected new one — there's no inbound message to key off of for
+      // those, unlike an ordinary reply.
+      if (result.outboundMessageId) {
+        await db
+          .prepare('UPDATE prospect_messages SET gmail_message_id = ?, gmail_thread_id = ? WHERE id = ?')
+          .run(sent.id, sent.threadId, result.outboundMessageId);
+      }
       summary.messagesProcessed++;
     } catch (err) {
       if (err instanceof CreatorNotFoundError) throw err; // connection row is orphaned — surface it, don't loop forever

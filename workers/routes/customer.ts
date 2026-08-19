@@ -24,8 +24,13 @@ async function creatorBySlug(db: ReturnType<typeof wrapD1>, slug: string) {
 }
 
 async function coachNumber(db: ReturnType<typeof wrapD1>, creatorId: string): Promise<string | null> {
+  // Filtered on purpose explicitly — a creator can now also have a
+  // 'qualify' number (see workers/telephony/qualification-call.ts).
+  // Grabbing "the first number by created_at" would show a customer's
+  // account page a prospect-facing qualification number instead of the
+  // actual coach number once both exist.
   const row = await db
-    .prepare('SELECT e164 FROM phone_numbers WHERE creator_id = ? ORDER BY created_at LIMIT 1')
+    .prepare("SELECT e164 FROM phone_numbers WHERE creator_id = ? AND purpose = 'coach' ORDER BY created_at LIMIT 1")
     .get<Pick<PhoneNumber, 'e164'>>(creatorId);
   return row?.e164 ?? null;
 }

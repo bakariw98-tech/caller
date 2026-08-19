@@ -625,3 +625,110 @@ ALTER TABLE channel_videos ADD COLUMN cost_usd_micros INTEGER NOT NULL DEFAULT 0
 -- plus first_seen_at answers that with no extra data -- same convention as
 -- first_seen_at/last_seen_at already on this table.
 ALTER TABLE prospects ADD COLUMN qualified_at INTEGER;
+
+-- ==================================================== voice escalation ==
+--
+-- A hot lead who calls in is a different kind of prospect than one still
+-- typing an email, and the call is where the real sales conversation
+-- happens -- deep discovery, a diagnosis the prospect confirms in their
+-- own words, an honestly-earned offer, real objection handling. Email's
+-- only job in this mode is to make someone want to call.
+--
+-- Creator-level opt-in: existing creators are unaffected until they turn
+-- this on (voice_qualification_mode default 0).
+ALTER TABLE creators ADD COLUMN voice_qualification_mode INTEGER NOT NULL DEFAULT 0;
+
+-- 'soft' (default) caps how many times the AI re-engages the SAME
+-- objection before backing off gracefully; 'assertive' is opt-in, never
+-- assumed. This is a prompt-level cap, not a tool-enforced one -- unlike
+-- the offer-honesty gate, over-persistence costs an awkward call rather
+-- than a false claim, so it doesn't need the same structural enforcement.
+ALTER TABLE creators ADD COLUMN objection_handling_posture TEXT NOT NULL DEFAULT 'soft';
+
+-- Distinguishes a creator's coaching number from a qualification/sales
+-- number -- a creator can run both. Default 'coach' preserves every
+-- existing row's behavior with zero migration; application code that
+-- assumed "one number = the coach" (workers/routes/customer.ts
+-- coachNumber()) must filter on this explicitly now.
+ALTER TABLE phone_numbers ADD COLUMN purpose TEXT NOT NULL DEFAULT 'coach';
+
+-- The short code a prospect gives verbally when they call in, generated
+-- when the hook email is sent and looked up by the new resolve_prospect
+-- MCP tool -- same shape as customers.passcode/idx_customers_passcode,
+-- just for a prospect instead of a paying student.
+ALTER TABLE prospects ADD COLUMN call_code TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_prospects_call_code ON prospects(creator_id, call_code) WHERE call_code IS NOT NULL;
+-- Doubles as "the hook was already sent" -- the first-contact check that
+-- decides whether a new prospect gets the hook or a normal written reply.
+ALTER TABLE prospects ADD COLUMN call_code_issued_at INTEGER;
+-- Write-once (COALESCE, same idiom as qualified_at) so a prospect who
+-- calls back a second time doesn't trigger a second follow-up email.
+ALTER TABLE prospects ADD COLUMN followup_sent_at INTEGER;
+
+-- Which prospect a qualification call belongs to (parallels customer_id,
+-- already nullable) -- set by resolve_prospect the moment it matches a
+-- call_code, since that MCP tool call and the Durable Object that later
+-- reads this are different Worker invocations sharing only D1.
+ALTER TABLE calls ADD COLUMN prospect_id TEXT REFERENCES prospects(id) ON DELETE SET NULL;
+-- 'coaching' (default, every existing row) | 'qualification'. Lets
+-- CallSessionDO.finish() decide whether to trigger a follow-up email at
+-- all, and lets routeIncomingCall's course-requirement check be scoped to
+-- coaching calls only.
+ALTER TABLE calls ADD COLUMN kind TEXT NOT NULL DEFAULT 'coaching';
+-- The three signals the voice funnel is built from -- set via the new
+-- record_call_outcome MCP tool during/after the conversation, not
+-- inferred after the fact.
+ALTER TABLE calls ADD COLUMN offer_presented INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE calls ADD COLUMN objection_raised INTEGER NOT NULL DEFAULT 0;
+-- What CallSessionDO.finish() branches on: true sends a short "here's the
+-- link" email with no new generation call (the offer was already decided
+-- live); false runs the fuller written-followup path through the existing
+-- runLeadgenPipeline().
+ALTER TABLE calls ADD COLUMN next_step_accepted INTEGER NOT NULL DEFAULT 0;
+
+-- Per-offer sales truth, creator-authored -- what actually gets said about
+-- an offer on a qualification call traces back to what the creator wrote
+-- here, never model invention. Plain TEXT, matching the existing
+-- who_for/covers/price_text convention rather than introducing a new
+-- structured-array pattern where none exists on this table yet.
+ALTER TABLE offers ADD COLUMN not_who_for TEXT;
+-- The ONLY objection-handling material the call prompt is given. If a
+-- raised objection isn't covered here, the model has nothing to invent a
+-- rebuttal from -- it says so honestly instead. This is what enforces the
+-- objection floor: not a separate check, just what the model is (and
+-- isn't) handed to work with.
+ALTER TABLE offers ADD COLUMN objections_and_responses TEXT;
+ALTER TABLE offers ADD COLUMN recommend_when TEXT;
+ALTER TABLE offers ADD COLUMN dont_recommend_when TEXT;
+-- 'low_ticket' | 'course' | 'high_ticket_application' | 'very_high_ticket'.
+-- Deterministically picks the next-step phrasing in code (checkout link /
+-- program details / application) -- not something the model phrases
+-- freely per call, same discipline as everything else routed here.
+ALTER TABLE offers ADD COLUMN cta_tier TEXT NOT NULL DEFAULT 'course';
+
+-- A separate table rather than widening mcp_sessions: that table's
+-- course_id is NOT NULL with a live FK to courses, and SQLite has no
+-- ALTER COLUMN, so relaxing it would mean a destructive rebuild of a live
+-- table. This mirrors mcp_sessions minus the course_id/enrollment_id
+-- columns that don't apply to a qualification call. resolveToken tries
+-- mcp_sessions then this table; revokeCallTokens runs against both.
+CREATE TABLE IF NOT EXISTS mcp_qual_sessions (
+  token_hash  TEXT PRIMARY KEY,
+  call_id     TEXT NOT NULL REFERENCES calls(id) ON DELETE CASCADE,
+  creator_id  TEXT NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+  prospect_id TEXT REFERENCES prospects(id),
+  expires_at  INTEGER NOT NULL,
+  revoked_at  INTEGER,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_qual_sessions_call ON mcp_qual_sessions(call_id);
+
+-- 'reply' (default, every existing row) | 'hook' | 'followup' -- lets the
+-- dashboard eventually distinguish call-flow messages from ordinary email
+-- replies. gmail_message_id/gmail_thread_id capture what Gmail's send API
+-- returns for an OUTBOUND message -- today only inbound ids are stored
+-- (source_message_id) -- needed so the follow-up email threads into the
+-- hook email's conversation instead of starting a disconnected new one.
+ALTER TABLE prospect_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply';
+ALTER TABLE prospect_messages ADD COLUMN gmail_message_id TEXT;
+ALTER TABLE prospect_messages ADD COLUMN gmail_thread_id TEXT;

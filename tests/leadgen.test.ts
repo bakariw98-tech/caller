@@ -3,6 +3,7 @@ import {
   selectKnowledge,
   scoreProspect,
   buildEmailBody,
+  buildHookEmailBody,
   normalizeVideoReference,
   type KnowledgeRow,
 } from '../workers/leadgen/reply.js';
@@ -206,6 +207,31 @@ describe('buildEmailBody', () => {
   it('omits the video block entirely when nothing was referenced', () => {
     const out = buildEmailBody({ body: 'Just an answer.', videoLink: null });
     expect(out).toBe('Just an answer.');
+  });
+});
+
+describe('buildHookEmailBody', () => {
+  it('assembles a tel: link and a short code parenthetical, never a numbered process', () => {
+    const out = buildHookEmailBody({
+      teaser: 'I think I can help you figure this out more specifically — want to talk it through?',
+      phoneE164: '+15551234567',
+      callCode: '482913',
+    });
+    expect(out).toBe(
+      'I think I can help you figure this out more specifically — want to talk it through?\n\n' +
+        'tel:+15551234567\n\n' +
+        "(I'll ask for this quick code so I know it's you: 482913)",
+    );
+  });
+
+  it('strips non tel-safe characters from the phone number when building the href', () => {
+    const out = buildHookEmailBody({ teaser: 'Want to talk?', phoneE164: '+1 (555) 123-4567', callCode: '000000' });
+    expect(out).toContain('tel:+15551234567');
+  });
+
+  it('never mentions "step" or a numbered list — this is an invitation, not a process', () => {
+    const out = buildHookEmailBody({ teaser: 'Want to talk it through?', phoneE164: '+15551234567', callCode: '123456' });
+    expect(out.toLowerCase()).not.toMatch(/step 1|step one|first,\s|1\)/);
   });
 });
 

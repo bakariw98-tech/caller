@@ -1,17 +1,11 @@
 import type { SqlDb } from '../db/types.js';
 import type { Creator } from '../../src/domain/types.js';
 import { id, now, hmacHex } from '../../src/util/ids.js';
-import {
-  generateReply,
-  loadKnowledge,
-  loadOffers,
-  selectKnowledgeHybrid,
-  scoreProspect,
-  type GeneratedReply,
-} from './reply.js';
+import { generateReply, loadKnowledge, loadOffers, selectKnowledgeHybrid, type GeneratedReply } from './reply.js';
 import { embedQuery, type AiBinding } from './embeddings.js';
 import { stripQuotedReply } from '../email/gmail.js';
-import { looksLikeOptOut, isQualified } from './prompt.js';
+import { looksLikeOptOut } from './prompt.js';
+import { applyProspectSignals, safeArr, nullIfBlank } from './prospects.js';
 
 export class CreatorNotFoundError extends Error {
   constructor(creatorId: string) {
@@ -47,29 +41,15 @@ export interface PipelineResult {
   knowledgeUsed: { problem: string; had_boundary: boolean }[];
   prospectId: string | null;
   usage: GeneratedReply['usage'];
-}
-
-/**
- * Empty string -> null before persisting.
- *
- * The merge below relies on COALESCE, which only replaces NULL. An empty
- * string stored once therefore blocks the column forever: observed live with
- * `goal = ''`, which meant a prospect who later stated a real goal could
- * never have it recorded, and canAssessFit stayed false permanently.
- */
-function nullIfBlank(v: string | null | undefined): string | null {
-  const t = v?.trim();
-  return t ? t : null;
-}
-
-function safeArr(json: unknown): string[] {
-  if (typeof json !== 'string') return [];
-  try {
-    const p = JSON.parse(json);
-    return Array.isArray(p) ? p.filter((x) => typeof x === 'string') : [];
-  } catch {
-    return [];
-  }
+  /**
+   * The `prospect_messages` row id of the outbound reply just persisted —
+   * null when nothing was persisted (opt-out, `persist:false`). Voice
+   * escalation's hook/follow-up emails aren't triggered by an inbound
+   * message the way an ordinary reply is, so there's no `source_message_id`
+   * to thread from later; the caller patches Gmail's own `id`/`threadId`
+   * onto this row after actually sending, once those are known.
+   */
+  outboundMessageId: string | null;
 }
 
 /**
@@ -187,86 +167,49 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
     await db.prepare('UPDATE prospects SET opted_out = 1, last_seen_at = ? WHERE id = ?').run(now(), prospect.id);
   }
 
+  let outboundMessageId: string | null = null;
   if (persist && prospect) {
     const s = generated.signals;
-    const objections = [...new Set([...safeArr(prospect.objections_json), ...s.objections])];
-    const topics = [...new Set([...safeArr(prospect.topics_json), ...s.topics])];
-    const askedDimensions = [
-      ...new Set([...safeArr(prospect.asked_dimensions_json), ...(s.asked_about ? [s.asked_about] : [])]),
-    ];
-    const exchanges = (prospect.exchanges ?? 0) + 1;
-    // Stored as one column for scoring purposes, even though the model
-    // reports two distinct reasons — a content gap versus a self-disclosed
-    // fit with an offer. Both mean the same thing to a creator glancing at
-    // the prospects list: this person is worth their attention.
-    const hitBoundary = prospect.hit_boundary || s.hit_boundary || s.qualifies_for_offer ? 1 : 0;
 
-    const mergedSituation = s.situation ?? prospect.situation;
-    const mergedDiagnosedProblem = s.diagnosed_problem ?? prospect.diagnosed_problem;
-    const mergedGoal = s.goal ?? prospect.goal;
-
-    const score = scoreProspect({
-      exchanges,
-      hit_boundary: hitBoundary,
-      clicked_offer: prospect.clicked_offer,
-      situation: mergedSituation,
-      blocked_on: s.blocked_on ?? prospect.blocked_on,
-      goal: mergedGoal,
-    });
-
-    // The same rule the AI itself uses to decide a recommendation is
-    // earned (isQualified() in prompt.ts) — see that function's comment
-    // for why this must not be a separately-maintained definition. Passed
-    // as NULL when not (yet) met, so COALESCE below leaves an existing
-    // qualified_at alone and leaves an unqualified one NULL — this can
-    // only ever be set once, never cleared or overwritten.
-    const qualifiedNow = isQualified({
-      situation: mergedSituation,
-      diagnosed_problem: mergedDiagnosedProblem,
-      goal: mergedGoal,
-    });
-
-    await db
-      .prepare(
-        `UPDATE prospects
-            SET situation = COALESCE(?, situation), goal = COALESCE(?, goal), tried = COALESCE(?, tried),
-                blocked_on = COALESCE(?, blocked_on), diagnosed_problem = COALESCE(?, diagnosed_problem),
-                knowledge_level = COALESCE(?, knowledge_level), urgency = COALESCE(?, urgency),
-                requested_offer = MAX(requested_offer, ?), offer_pitched = MAX(offer_pitched, ?),
-                objections_json = ?, topics_json = ?,
-                exchanges = ?, hit_boundary = ?, score = ?, last_seen_at = ?, name = COALESCE(name, ?),
-                last_asked_about = ?, asked_dimensions_json = ?, qualified_at = COALESCE(qualified_at, ?)
-          WHERE id = ?`,
-      )
-      .run(
-        nullIfBlank(s.situation),
-        nullIfBlank(s.goal),
-        nullIfBlank(s.tried),
-        nullIfBlank(s.blocked_on),
-        nullIfBlank(s.diagnosed_problem),
-        nullIfBlank(s.knowledge_level),
-        nullIfBlank(s.urgency),
-        s.requested_offer ? 1 : 0,
+    await applyProspectSignals(
+      db,
+      prospect,
+      {
+        situation: s.situation,
+        goal: s.goal,
+        tried: s.tried,
+        blocked_on: s.blocked_on,
+        diagnosed_problem: s.diagnosed_problem,
+        knowledge_level: s.knowledge_level,
+        urgency: s.urgency,
+        objections: s.objections,
+        topics: s.topics,
+        requested_offer: s.requested_offer,
+        hit_boundary: s.hit_boundary,
+        qualifies_for_offer: s.qualifies_for_offer,
+      },
+      {
         // Only a PAID recommendation counts as "already pitched". Sending a
         // free video is not a pitch, and letting it set this flag would
         // permanently suppress the real recommendation later.
-        generated.routedOfferId && !generated.sharedFreeResource ? 1 : 0,
-        JSON.stringify(objections),
-        JSON.stringify(topics),
-        exchanges,
-        hitBoundary,
-        score,
-        now(),
-        params.fromName ?? null,
-        // Deliberately overwritten each turn rather than COALESCEd: this
-        // records what the LAST reply asked, so it must clear when a reply
-        // asks nothing. Carrying a stale value forward would suppress a
-        // legitimate question on a later turn.
-        nullIfBlank(s.asked_about),
-        JSON.stringify(askedDimensions),
-        qualifiedNow ? now() : null,
-        prospect.id,
-      );
+        offerPitched: Boolean(generated.routedOfferId && !generated.sharedFreeResource),
+        name: params.fromName ?? null,
+      },
+    );
+
+    // Email-only bookkeeping: which discovery dimension the LAST reply
+    // asked about, so a later turn never re-asks it. Deliberately
+    // overwritten each turn rather than COALESCEd — must clear when a
+    // reply asks nothing, or a stale value would suppress a legitimate
+    // question later. Doesn't apply to a live call (no single
+    // discovery_question field there), so this stays outside the shared
+    // applyProspectSignals() rather than baked into it.
+    const askedDimensions = [
+      ...new Set([...safeArr(prospect.asked_dimensions_json), ...(s.asked_about ? [s.asked_about] : [])]),
+    ];
+    await db
+      .prepare('UPDATE prospects SET last_asked_about = ?, asked_dimensions_json = ? WHERE id = ?')
+      .run(nullIfBlank(s.asked_about), JSON.stringify(askedDimensions), prospect.id);
 
     await db
       .prepare(
@@ -275,6 +218,7 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
       )
       .run(id('msg'), prospect.id, creatorId, params.subject ?? null, question, params.sourceMessageId ?? null, now());
 
+    outboundMessageId = id('msg');
     await db
       .prepare(
         `INSERT INTO prospect_messages
@@ -283,7 +227,7 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
          VALUES (?, ?, ?, 'outbound', ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        id('msg'),
+        outboundMessageId,
         prospect.id,
         creatorId,
         params.subject ? `Re: ${params.subject}` : null,
@@ -305,6 +249,7 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
     routedOfferId: generated.routedOfferId,
     knowledgeUsed: knowledge.map((k) => ({ problem: k.problem, had_boundary: Boolean(k.boundary) })),
     prospectId: prospect?.id ?? null,
+    outboundMessageId: optedOut ? null : outboundMessageId,
     usage: generated.usage,
   };
 }

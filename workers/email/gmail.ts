@@ -366,11 +366,25 @@ export function buildRawMessage(msg: OutboundMessage): string {
 }
 
 /** Sends a reply, keeping it in the same Gmail thread as the message it answers. */
-export async function sendMessage(accessToken: string, raw: string, threadId?: string): Promise<void> {
+/**
+ * Returns the sent message's own Gmail id and thread id — needed by the
+ * voice-escalation hook/follow-up emails, which aren't triggered by an
+ * inbound message the way an ordinary reply is (so there's no
+ * `source_message_id` to thread from) and instead have to remember their
+ * OWN send's thread id to keep a later follow-up in the same conversation.
+ */
+export async function sendMessage(
+  accessToken: string,
+  raw: string,
+  threadId?: string,
+): Promise<{ id: string; threadId: string }> {
   const res = await gmailFetch(accessToken, '/messages/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(threadId ? { raw, threadId } : { raw }),
   });
   if (!res.ok) throw new Error(`gmail send failed: ${res.status} ${await res.text()}`);
+  const json = (await res.json()) as { id?: string; threadId?: string };
+  if (!json.id || !json.threadId) throw new Error('gmail send: response missing id/threadId');
+  return { id: json.id, threadId: json.threadId };
 }

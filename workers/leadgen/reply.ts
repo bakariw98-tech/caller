@@ -1,7 +1,13 @@
 import type { SqlDb } from '../db/types.js';
 import type { Creator } from '../../src/domain/types.js';
 import { chatCompletionJson, USD_PER_TICK } from '../xai/client.js';
-import { buildReplyInstructions, type KnowledgeForReply, type OfferForReply, type ProspectContext } from './prompt.js';
+import {
+  buildReplyInstructions,
+  buildHookInstructions,
+  type KnowledgeForReply,
+  type OfferForReply,
+  type ProspectContext,
+} from './prompt.js';
 import { cosineSimilarity, decodeVector } from './embeddings.js';
 
 export interface KnowledgeRow {
@@ -198,9 +204,23 @@ export type MessageType =
   | 'off_topic'
   | 'confused'
   | 'opt_out'
-  | 'other';
+  | 'other'
+  // Not one of the model's own choices — never in replyJson's enum, so the
+  // model can never pick it. Synthesized in code by runHookPipeline
+  // (workers/leadgen/inbound.ts) for a hook email, which runs a different,
+  // much smaller generation call entirely. Exists so a hook turn is honestly
+  // distinguishable in stored signals rather than overloaded onto 'other'.
+  | 'hook_sent';
 
-export type NextAction = 'answer' | 'diagnose' | 'teach' | 'win' | 'resource' | 'offer';
+export type NextAction =
+  | 'answer'
+  | 'diagnose'
+  | 'teach'
+  | 'win'
+  | 'resource'
+  | 'offer'
+  // Same reasoning as MessageType's 'hook_sent' — synthesized, never model-chosen.
+  | 'invite_call';
 
 export interface QualificationSignals {
   /** What the inbound message actually is. Drives how the reply is shaped. */
@@ -450,6 +470,67 @@ export function buildEmailBody(parts: {
   }
 
   return blocks.join('\n\n');
+}
+
+/**
+ * Deterministically assembles the hook email — the phone number and call
+ * code are appended in code, never written by the model, for the same
+ * reason `buildEmailBody()` never trusts the model to transcribe a real
+ * offer link: it doesn't reliably have it right, so it doesn't get to try.
+ *
+ * A bare `tel:` URI on its own line, in a plain-text email (this product
+ * sends no HTML — see gmail.ts's buildRawMessage), is the closest thing to
+ * a one-tap button available in that format; most mobile mail clients
+ * auto-linkify it. The call code gets one short parenthetical, not a set
+ * of numbered steps — the invitation should read like "want to talk it
+ * through?", not a process to follow.
+ */
+export function buildHookEmailBody(parts: { teaser: string; phoneE164: string; callCode: string }): string {
+  const telHref = `tel:${parts.phoneE164.replace(/[^\d+]/g, '')}`;
+  return [parts.teaser.trim(), telHref, `(I'll ask for this quick code so I know it's you: ${parts.callCode})`].join(
+    '\n\n',
+  );
+}
+
+const hookJson = {
+  type: 'object',
+  properties: {
+    teaser: {
+      type: 'string',
+      description: 'The 2-4 sentence email body. No subject line, no signature, no phone number or code.',
+    },
+  },
+  required: ['teaser'],
+  additionalProperties: false,
+} as const;
+
+/**
+ * Generates just the warm teaser paragraph for a hook email — see
+ * `buildHookInstructions()` for why this deliberately carries no
+ * knowledge/offer context. `buildHookEmailBody()` assembles the rest.
+ */
+export async function generateHookReply(params: {
+  apiBase: string;
+  apiKey: string;
+  model: string;
+  creator: Creator;
+  question: string;
+}): Promise<{ teaser: string; usage: GeneratedReply['usage'] }> {
+  const { value, usage } = await chatCompletionJson<{ teaser: string }>(params.apiBase, params.apiKey, {
+    model: params.model,
+    system: buildHookInstructions({ creator: params.creator }),
+    user: `They just wrote:\n\n${params.question}`,
+    schemaName: 'hook_reply',
+    schema: hookJson as unknown as Record<string, unknown>,
+  });
+  return {
+    teaser: value.teaser,
+    usage: {
+      promptTokens: usage.prompt_tokens ?? 0,
+      completionTokens: usage.completion_tokens ?? 0,
+      costUsd: (usage.cost_in_usd_ticks ?? 0) * USD_PER_TICK,
+    },
+  };
 }
 
 export async function generateReply(params: {
