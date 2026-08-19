@@ -162,23 +162,33 @@ This uses your microphone.</p>
 <button id="start">Start talking</button>
 <button id="hang" class="hang" style="display:none">Hang up</button>
 <div id="status"></div>
+<audio id="out" autoplay playsinline></audio>
 <script>
 (function () {
   var DATA = ${data};
   var SAMPLE_RATE = 24000; // fixed by the API — see docs.x.ai, "24000 Hz (Default)"
-  var el = { start: document.getElementById('start'), hang: document.getElementById('hang'), status: document.getElementById('status') };
+  var el = { start: document.getElementById('start'), hang: document.getElementById('hang'), status: document.getElementById('status'), out: document.getElementById('out') };
   var ws = null, ended = false;
   var micStream = null, micNode = null;
   // ONE shared AudioContext for both mic capture and playback, created and
   // resumed synchronously inside the click handler below — not lazily on
-  // the first incoming audio chunk. That was the actual bug in an earlier
-  // version: a context created later, inside an async WebSocket message
-  // handler, falls outside the browser's user-gesture chain and several
-  // browsers leave it permanently 'suspended' with no error at all — audio
-  // decodes and queues fine, it just never actually plays. Creating +
-  // resuming it here, in direct response to the click, is what autoplay
-  // policies require.
+  // the first incoming audio chunk. That was an earlier bug: a context
+  // created later, inside an async WebSocket message handler, falls
+  // outside the browser's user-gesture chain and several browsers leave it
+  // permanently 'suspended' with no error at all — audio decodes and
+  // queues fine, it just never actually plays. Creating + resuming it
+  // here, in direct response to the click, is what autoplay policies
+  // require.
   var audioCtx = null, nextPlayTime = 0;
+  // Playback is routed through a MediaStreamDestination -> a real <audio>
+  // element (#out), not straight to audioCtx.destination. On a phone this
+  // is not cosmetic: the moment a page captures the mic, iOS/Android
+  // default the whole page's audio session into "phone call" mode and
+  // route playback to the EARPIECE instead of the speaker — silent, no
+  // error, exactly the symptom reported live ("I can't hear it"). Playing
+  // through an actual <audio> element sidesteps that routing; raw
+  // AudioContext output does not.
+  var playDest = null;
 
   function setStatus(s) { el.status.textContent = s; }
 
@@ -186,6 +196,9 @@ This uses your microphone.</p>
     el.start.disabled = true;
     audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
     nextPlayTime = audioCtx.currentTime;
+    playDest = audioCtx.createMediaStreamDestination();
+    el.out.srcObject = playDest.stream;
+    el.out.play().catch(function () {});
     audioCtx.resume().catch(function () {});
     connect().catch(function (e) { setStatus('Could not connect: ' + e.message); el.start.disabled = false; });
   };
@@ -222,7 +235,7 @@ This uses your microphone.</p>
     for (var i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
     var src = audioCtx.createBufferSource();
     src.buffer = buf;
-    src.connect(audioCtx.destination);
+    src.connect(playDest);
     var startAt = Math.max(nextPlayTime, audioCtx.currentTime);
     src.start(startAt);
     nextPlayTime = startAt + buf.duration;
