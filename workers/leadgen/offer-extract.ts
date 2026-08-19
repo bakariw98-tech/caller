@@ -3,6 +3,7 @@ import type { Creator } from '../../src/domain/types.js';
 import { chatCompletionJson, type ChatUsage } from '../xai/client.js';
 import { loadKnowledge, selectKnowledgeHybrid, type KnowledgeRow } from './reply.js';
 import { embedQuery, type AiBinding } from './embeddings.js';
+import { scrapeOfferSite } from './page-scrape.js';
 
 export interface OfferExtractionDraft {
   found: boolean;
@@ -111,7 +112,7 @@ const extractionSchema = {
   additionalProperties: false,
 } as const;
 
-function buildExtractionInstructions(creator: Creator, offerName: string): string {
+function buildExtractionInstructions(creator: Creator, offerName: string, hasPage: boolean): string {
   return [
     `You are ${creator.business_name} themselves, reading back through everything you have ever said about one`,
     `specific offer: "${offerName}" — every video, every passage below where you brought it up. Someone who watched`,
@@ -119,6 +120,28 @@ function buildExtractionInstructions(creator: Creator, offerName: string): strin
     'actually recommend it, even though you never said any one of those things in a single tidy sentence. That is',
     'the understanding you are reconstructing — not hunting for one quote that happens to answer each field.',
     '',
+    ...(hasPage
+      ? [
+          'The material below comes in TWO kinds, and they are good at different things:',
+          '',
+          "PAGE passages are the offer's own live sales page — what it officially includes, what tiers and prices",
+          'actually exist right now, what buyers said in the testimonials, what the FAQ admits. When the page and a',
+          'video disagree on a hard fact (a price, a tier, a feature), the PAGE is current and the video may be',
+          'months stale — trust the page for the fact. Ignore the parts of a page that are just site furniture:',
+          'nav labels, cookie notices, login prompts, footer legal links.',
+          '',
+          'VIDEO passages are how you actually sell it out loud — who you are really talking to, the objection you',
+          'keep answering, the moment you tell someone it is NOT for them. A page will never say "do not buy this',
+          'yet"; you do, on camera. For who_for, not_who_for, recommend_when, dont_recommend_when and',
+          'objections_and_responses, your own voice in the videos is the better source, and the page fills in the',
+          'concrete detail around it.',
+          '',
+          'Use both. The page alone is a brochure; your videos alone go stale on price and specifics. found should',
+          'be true if EITHER kind of material genuinely covers this offer — a real page for it is enough on its own,',
+          'even if you never happened to mention it on camera.',
+          '',
+        ]
+      : []),
     'Pull the WHOLE picture together across every passage below that touches this offer, not just the first or',
     'most obvious one. The same offer may come up in five different videos with five different angles — a real',
     'understanding uses all five, not whichever one you read first.',
@@ -177,10 +200,21 @@ export function findLiteralNameMatches(rows: KnowledgeRow[], offerName: string):
 }
 
 /**
- * Pulls a draft offer record out of a creator's own ingested material
- * (pasted knowledge + YouTube transcripts, whatever is in knowledge_items)
- * by name, so a creator does not have to hand-type the sales-truth
- * playbook for an offer they have already talked about on camera.
+ * Pulls a draft offer record out of the two things that actually know
+ * what an offer is: the creator's own ingested material (pasted
+ * knowledge + YouTube transcripts, whatever is in knowledge_items) and,
+ * when they paste a link, the offer's live sales page — read at lookup
+ * time, not cached, so the price is whatever it is today. Between them
+ * a creator does not have to hand-type the sales-truth playbook for
+ * something they already sell.
+ *
+ * The two sources answer different questions and neither replaces the
+ * other. The page knows the current price, the real tiers, the
+ * testimonials and the FAQ; the transcripts know who the creator is
+ * actually talking to, the objection they keep answering, and when they
+ * tell someone not to buy yet. buildExtractionInstructions() spells that
+ * split out for the model rather than leaving it to infer which to
+ * believe when they disagree.
  *
  * Returns a DRAFT for the creator to review and edit before saving —
  * never writes to `offers` directly — matching the same discipline
@@ -199,54 +233,83 @@ export async function extractOfferDetails(params: {
   model: string;
   creator: Creator;
   offerName: string;
-}): Promise<{ draft: OfferExtractionDraft; usage: ChatUsage }> {
+  /** The offer's own sales page, if the creator supplied one. Read live. */
+  offerUrl?: string;
+}): Promise<{
+  draft: OfferExtractionDraft;
+  usage: ChatUsage;
+  pagesRead: { url: string; title: string | null }[];
+  scrapeErrors: string[];
+}> {
+  // The page and the transcripts are independent inputs — either alone is
+  // enough to produce a draft, so neither is allowed to short-circuit the
+  // other. A creator adding a brand-new offer they have never filmed still
+  // gets a real draft from the page; one with no page still gets exactly
+  // what this function produced before pages existed.
+  const scraped = params.offerUrl?.trim() ? await scrapeOfferSite(params.offerUrl) : { pages: [], errors: [] };
+  const pagesRead = scraped.pages.map((p) => ({ url: p.url, title: p.title }));
+
   const all = await loadKnowledge(params.db, params.creator.id);
-  if (!all.length) return { draft: emptyDraft(), usage: {} };
 
-  let queryVector: Float32Array | null = null;
-  if (params.ai) {
-    try {
-      queryVector = await embedQuery(params.ai, params.offerName);
-    } catch (err) {
-      console.error('offer-extraction query embedding failed, falling back to keyword retrieval', err);
+  let relevant: KnowledgeRow[] = [];
+  if (all.length) {
+    let queryVector: Float32Array | null = null;
+    if (params.ai) {
+      try {
+        queryVector = await embedQuery(params.ai, params.offerName);
+      } catch (err) {
+        console.error('offer-extraction query embedding failed, falling back to keyword retrieval', err);
+      }
     }
+    // Much wider than the usual reply retrieval (6): this runs once, when a
+    // creator adds an offer, not on every turn of a live conversation — the
+    // point is to reconstruct the FULL picture of how they have actually
+    // sold this thing across every video that touches it, not answer one
+    // question from the single best-matching passage. Missing a passage
+    // means an incomplete synthesis rather than a wrong one — the cheaper
+    // failure, and worth the extra tokens here specifically.
+    const hybrid = selectKnowledgeHybrid(all, params.offerName, queryVector, 25);
+    // Literal name matches are force-included on top of hybrid ranking, not
+    // instead of it, and — unlike hybrid — never capped: every passage that
+    // actually names the offer goes in. See findLiteralNameMatches()'s own
+    // doc comment for why this second pass exists at all.
+    const literal = findLiteralNameMatches(all, params.offerName);
+    const seen = new Set(hybrid.map((r) => r.id));
+    relevant = [...hybrid, ...literal.filter((r) => !seen.has(r.id))];
   }
-  // Much wider than the usual reply retrieval (6): this runs once, when a
-  // creator adds an offer, not on every turn of a live conversation — the
-  // point is to reconstruct the FULL picture of how they have actually
-  // sold this thing across every video that touches it, not answer one
-  // question from the single best-matching passage. Missing a passage
-  // means an incomplete synthesis rather than a wrong one — the cheaper
-  // failure, and worth the extra tokens here specifically.
-  const hybrid = selectKnowledgeHybrid(all, params.offerName, queryVector, 25);
-  // Literal name matches are force-included on top of hybrid ranking, not
-  // instead of it, and — unlike hybrid — never capped: every passage that
-  // actually names the offer goes in. See findLiteralNameMatches()'s own
-  // doc comment for why this second pass exists at all.
-  const literal = findLiteralNameMatches(all, params.offerName);
-  const seen = new Set(hybrid.map((r) => r.id));
-  const relevant = [...hybrid, ...literal.filter((r) => !seen.has(r.id))];
-  if (!relevant.length) return { draft: emptyDraft(), usage: {} };
 
-  const user = relevant
-    .map((k, i) => `[${i + 1}] ${k.problem}\n${k.guidance}${k.source_url ? `\n(source: ${k.source_url})` : ''}`)
-    .join('\n\n');
+  if (!scraped.pages.length && !relevant.length) {
+    return { draft: emptyDraft(), usage: {}, pagesRead, scrapeErrors: scraped.errors };
+  }
+
+  // One flat, numbered list across both kinds of material, so the model's
+  // source_indices resolve the same way regardless of where a passage came
+  // from — the creator's "From:" line then links pages and videos alike.
+  const passages: { block: string; source: { title: string; url: string | null } }[] = [
+    ...scraped.pages.map((p) => ({
+      block: `PAGE — ${p.title ?? p.url}\n(${p.url})\n${p.text}`,
+      source: { title: p.title ?? p.url, url: p.url },
+    })),
+    ...relevant.map((k) => ({
+      block: `VIDEO — ${k.problem}\n${k.guidance}${k.source_url ? `\n(source: ${k.source_url})` : ''}`,
+      source: { title: k.problem, url: k.source_url ?? null },
+    })),
+  ];
+
+  const user = passages.map((p, i) => `[${i + 1}] ${p.block}`).join('\n\n');
 
   const { value, usage } = await chatCompletionJson<RawExtraction>(params.apiBase, params.apiKey, {
     model: params.model,
-    system: buildExtractionInstructions(params.creator, params.offerName),
+    system: buildExtractionInstructions(params.creator, params.offerName, scraped.pages.length > 0),
     user,
     schemaName: 'offer_extraction',
     schema: extractionSchema as unknown as Record<string, unknown>,
   });
 
-  if (!value.found) return { draft: emptyDraft(), usage };
+  if (!value.found) return { draft: emptyDraft(), usage, pagesRead, scrapeErrors: scraped.errors };
 
-  const sourceSet = new Set((value.source_indices ?? []).filter((n) => Number.isInteger(n) && n >= 1 && n <= relevant.length));
-  const sources = [...sourceSet].map((n) => {
-    const item = relevant[n - 1]!;
-    return { title: item.problem, url: item.source_url ?? null };
-  });
+  const sourceSet = new Set((value.source_indices ?? []).filter((n) => Number.isInteger(n) && n >= 1 && n <= passages.length));
+  const sources = [...sourceSet].map((n) => passages[n - 1]!.source);
 
   return {
     draft: {
@@ -262,176 +325,7 @@ export async function extractOfferDetails(params: {
       sources,
     },
     usage,
+    pagesRead,
+    scrapeErrors: scraped.errors,
   };
-}
-
-export interface DiscoveredOffer {
-  name: string;
-  url: string | null;
-  mentions: number;
-}
-
-interface RawDiscovery {
-  offers: { name: string; url?: string; source_indices: number[] }[];
-}
-
-/**
- * Well-known consumer platforms and AI assistants that show up constantly
- * in this kind of content as a step the creator's workflow runs inside of
- * or publishes to — never something a specific creator built and sells.
- * The discovery prompt already tells the model to exclude these, but a
- * non-reasoning model applies exclusion instructions from prose
- * unreliably (confirmed live — it kept listing "Co-work" as this
- * creator's own offer no matter how the instructions were worded).
- * Mirrors this codebase's standing rule of never trusting a model's
- * judgment where a deterministic check can do the job instead — same
- * discipline as the offer-honesty gate in pipeline.ts. Not exhaustive by
- * design: this is a backstop for the handful of names virtually every
- * creator's material will mention, not an attempt to classify everything
- * — real candidates specific to one creator still rely on the recall-
- * biased prompt above plus the creator's own review before adding.
- */
-const KNOWN_NON_OFFER_NAMES = new Set(
-  [
-    'Claude', 'ChatGPT', 'Co-work', 'Cowork', 'Claude Code', 'Gemini', 'Copilot',
-    'YouTube', 'Instagram', 'TikTok', 'Facebook', 'Twitter', 'X', 'LinkedIn',
-    'Reddit', 'Snapchat', 'Pinterest', 'Discord',
-    'Slack', 'Notion', 'Zapier', 'Make', 'Gmail', 'Google Sheets', 'Google Drive',
-    'Google Docs', 'Canva',
-  ].map((n) => n.toLowerCase()),
-);
-
-const discoverySchema = {
-  type: 'object',
-  properties: {
-    offers: {
-      type: 'array',
-      description: 'Every distinct product, program, tool, or paid offer this creator sells, sells access to, or is otherwise promoting as their own — found across the whole material below.',
-      items: {
-        type: 'object',
-        properties: {
-          name: {
-            type: 'string',
-            description: "The offer's actual name, exactly as the creator says it — never invented, never a generic description standing in for a real name.",
-          },
-          url: {
-            type: 'string',
-            description: 'A real URL for it, ONLY if one is literally stated somewhere. Never guess a domain from the name. Omit if none appears.',
-          },
-          source_indices: {
-            type: 'array',
-            items: { type: 'integer' },
-            description: 'Every bracketed [n] passage that mentions this specific offer.',
-          },
-        },
-        required: ['name', 'source_indices'],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ['offers'],
-  additionalProperties: false,
-} as const;
-
-function buildDiscoveryInstructions(creator: Creator): string {
-  return [
-    `You are ${creator.business_name} themselves, reading back through everything you have ever said across all`,
-    'of the material below, looking for every distinct thing you actually sell, sell access to, or otherwise',
-    'promote as your own — a course, a tool, a community, a service, a piece of software, a program. List each',
-    'one exactly once, under its real name.',
-    '',
-    "Most of this material will be plain how-to instruction, not a pitch — a creator teaching their own audience",
-    'rarely stops to say "and by the way, I sell this." Do NOT require pitch language or an explicit "I sell/',
-    'created this" statement before counting something as an offer. The strongest real signal is usage, not',
-    'framing: a specific, consistently-named tool, platform, or program that the how-to steps are built around and',
-    'route through, over and over, across many different pieces of material — "open Sandcastles and...", "in the',
-    'Sandcastles videos tab...", "add it to your Sandcastles watch list..." — is exactly what it looks like when a',
-    "creator is walking their audience through their OWN product's actual workflow. That recurring centrality is",
-    'itself the evidence, even when no single passage ever says the words "I sell this."',
-    '',
-    'The clearest real signal, stronger than any single sentence of framing, is which specific named thing the',
-    'how-to steps keep coming back to, over and over, across many different passages, as the tool everything else',
-    'routes through — that recurring centrality is what it looks like when a creator is walking their own audience',
-    "through their OWN product's actual workflow, whether or not any single passage ever explicitly says \"I sell",
-    'this."',
-    '',
-    'One category is NOT its own separate offer, even though it is a real named thing: a well-known, generic',
-    'third-party platform, social network, or AI assistant that this workflow merely publishes to, pulls from, or',
-    'runs steps inside of — social platforms content gets published to, general-purpose destinations a result gets',
-    'sent to, and AI assistants/coding tools the workflow happens to run inside of (for example: Claude, ChatGPT,',
-    'Co-work/Cowork, YouTube, Instagram, TikTok, Slack, Notion, and other tools exactly like these — mainstream,',
-    "everyone-uses-them tools, never something specific to this creator). Exclude these even when they recur",
-    "constantly, because they recur in EVERYONE's material, not because they belong to this creator.",
-    '',
-    "When you are genuinely unsure whether something is this creator's own thing or a feature/mention along the",
-    'way, include it rather than silently drop it — a wrong guess costs the creator one extra click to dismiss;',
-    "a real offer that never shows up here at all is the failure mode that actually matters, because it's the one",
-    'nobody notices.',
-    '',
-    'If the same offer is discussed across several different passages (which is common — the same product often',
-    'comes up in many different videos), that is ONE entry with every relevant passage listed in source_indices,',
-    'never a separate entry per mention. Two different names that are trivially the same wording apart (plural,',
-    'capitalization, "the" added or dropped) are the same offer too.',
-    '',
-    'Never invent a URL — only include one if it is literally stated somewhere in the material for that specific',
-    'offer. Most offers will have no URL here at all, and that is fine.',
-    '',
-    'If nothing below is genuinely something this creator sells or promotes as their own, return an empty list —',
-    'do not force a match to have something to report.',
-  ].join('\n');
-}
-
-/**
- * Scans a creator's ENTIRE knowledge base at once (not filtered by any
- * given name — there is nothing to filter by yet) for every distinct
- * thing they actually sell or promote as their own. Deliberately a
- * separate, lightweight pass from extractOfferDetails(): asking one
- * completion to both discover an unknown set of offers AND write a full
- * synthesized sales-truth playbook for each of them in the same call
- * risks a much larger, harder-to-trust structured output. Once a creator
- * picks a discovered name to actually add, the existing, already-tested
- * extractOfferDetails() does the rich synthesis for that one offer —
- * this function's only job is finding candidates worth showing them.
- */
-export async function discoverOffers(params: {
-  db: SqlDb;
-  apiBase: string;
-  apiKey: string;
-  model: string;
-  creator: Creator;
-}): Promise<{ offers: DiscoveredOffer[]; usage: ChatUsage }> {
-  const all = await loadKnowledge(params.db, params.creator.id);
-  if (!all.length) return { offers: [], usage: {} };
-
-  const user = all
-    .map((k, i) => `[${i + 1}] ${k.problem}\n${k.guidance}`)
-    .join('\n\n');
-
-  const { value, usage } = await chatCompletionJson<RawDiscovery>(params.apiBase, params.apiKey, {
-    model: params.model,
-    system: buildDiscoveryInstructions(params.creator),
-    user,
-    schemaName: 'offer_discovery',
-    schema: discoverySchema as unknown as Record<string, unknown>,
-  });
-
-  return { offers: filterDiscoveredOffers(value.offers), usage };
-}
-
-/**
- * Drops blank names and known non-offers (see KNOWN_NON_OFFER_NAMES)
- * from the model's raw discovery output. Split out from discoverOffers()
- * so this filtering logic — the actual load-bearing correctness fix for
- * the live "Co-work listed as this creator's own offer" bug — is unit
- * testable without mocking a network call.
- */
-export function filterDiscoveredOffers(raw: RawDiscovery['offers'] | undefined): DiscoveredOffer[] {
-  return (raw ?? [])
-    .filter((o) => o.name?.trim())
-    .filter((o) => !KNOWN_NON_OFFER_NAMES.has(o.name.trim().toLowerCase()))
-    .map((o) => ({
-      name: o.name.trim(),
-      url: o.url?.trim() || null,
-      mentions: Array.isArray(o.source_indices) ? o.source_indices.length : 0,
-    }));
 }

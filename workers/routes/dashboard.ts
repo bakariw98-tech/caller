@@ -150,13 +150,6 @@ export const PAGE = /* html */ `<!doctype html>
       genuinely help. <b>Paid</b> things are only recommended once it understands their situation, the real
       problem, and what they want.</p>
     <div id="offers"></div>
-    <div class="row" style="margin-top:.6rem">
-      <button id="btn-offer-discover" class="ghost" type="button">Find offers automatically</button>
-    </div>
-    <p class="note" style="margin-top:.3rem">Scans everything you've said across your knowledge base for things you
-      sell or promote as your own that aren't added yet — pricing is always left for you to fill in.</p>
-    <div class="status" id="st-offer-discover"></div>
-    <div id="offer-discover-results"></div>
     <details id="offer-add-details">
       <summary style="cursor:pointer;font-size:.88rem;margin-top:.5rem">Add an offer</summary>
       <label>What is it?</label>
@@ -167,10 +160,12 @@ export const PAGE = /* html */ `<!doctype html>
       <p class="note" style="margin:.35rem 0 0">Free things get sent whenever they'd genuinely help. Paid ones
         are only recommended once the coach understands their situation, their real problem, and what they want.</p>
       <label>Name</label><input id="o-name" placeholder="e.g. Kong AI, or 'How I find winning products'">
-      <p class="note" style="margin-top:.3rem">The moment you type a name and click elsewhere, this searches your
-        knowledge base (pasted material + YouTube transcripts) for what you've actually said about it and fills in
-        what it finds below — nothing invented. Leave whatever it can't find (usually the price) for yourself, and
-        review everything before saving.
+      <label>Link</label><input id="o-url" placeholder="https:// — the sales page, if it has one">
+      <p class="note" style="margin-top:.3rem">Fill in the name and the link, then click elsewhere. It reads what
+        you've actually said about this in your own material (pasted notes + YouTube transcripts) <i>and</i> reads
+        the sales page itself — the real pricing tiers, what's included, the testimonials, the FAQ — and fills in
+        everything below from both. Nothing invented. Review it before saving; the price especially is worth a
+        second look.
         <button id="btn-offer-lookup" class="ghost" type="button" style="margin-left:.4rem;padding:.15rem .5rem;font-size:.8em">Look up again</button>
       </p>
       <div class="status" id="st-offer-lookup"></div>
@@ -178,7 +173,6 @@ export const PAGE = /* html */ `<!doctype html>
       <label>Who it's for</label><input id="o-who" placeholder="who specifically benefits">
       <label>What it covers</label><textarea id="o-covers" style="min-height:4rem" placeholder="be precise — it will never claim more than this"></textarea>
       <label>Price</label><input id="o-price" placeholder="e.g. $390 one-time">
-      <label>Link</label><input id="o-url" placeholder="https://">
       <p class="note" style="margin-top:.9rem"><b>For qualification calls</b> — used only when Voice escalation
         (below) is on. Everything here is spoken from directly; nothing is invented beyond it.</p>
       <label>Who it's NOT for</label><input id="o-not-who" placeholder="rules out a bad-fit recommendation before it happens">
@@ -562,17 +556,19 @@ export const PAGE = /* html */ `<!doctype html>
     });
   }
 
-  var lastLookedUpName = null;
+  var lastLookedUp = null;
 
-  function lookupOfferFromContent(name) {
+  function lookupOfferFromContent(name, url) {
     if (!name) return;
-    show('st-offer-lookup', 'busy', 'Reading your material…');
+    show('st-offer-lookup', 'busy', url ? 'Reading your material and the sales page…' : 'Reading your material…');
     el('offer-lookup-sources').innerHTML = '';
-    api('/api/creators/' + CID + '/offers/extract', { method: 'POST', body: { name: name } })
+    api('/api/creators/' + CID + '/offers/extract', { method: 'POST', body: { name: name, url: url || '' } })
       .then(function (d) {
         var draft = d.draft;
+        var notes = (d.scrape_errors || []).slice(0, 2);
         if (!draft || !draft.found) {
-          show('st-offer-lookup', 'err', "Couldn't find this discussed by name in your material — fill it in below yourself.");
+          show('st-offer-lookup', 'err', "Couldn't find this in your material" + (url ? ' or on that page' : '') +
+            ' — fill it in below yourself.' + (notes.length ? ' (' + notes.join('; ') + ')' : ''));
           return;
         }
         if (draft.who_for) el('o-who').value = draft.who_for;
@@ -583,7 +579,13 @@ export const PAGE = /* html */ `<!doctype html>
         if (draft.recommend_when) el('o-recommend-when').value = draft.recommend_when;
         if (draft.dont_recommend_when) el('o-dont-recommend-when').value = draft.dont_recommend_when;
         if (draft.objections_and_responses) el('o-objections').value = draft.objections_and_responses;
-        show('st-offer-lookup', 'ok', 'Filled in below from your own material — check it over before saving. Price is worth double-checking either way.');
+        var pages = d.pages_read || [];
+        var msg = pages.length
+          ? 'Filled in from your material and ' + pages.length + ' page' + (pages.length === 1 ? '' : 's') +
+            ' of the site — check it over before saving.'
+          : 'Filled in from your own material — check it over before saving. Price is worth double-checking either way.';
+        if (notes.length) msg += ' (' + notes.join('; ') + ')';
+        show('st-offer-lookup', 'ok', msg);
         if (draft.sources && draft.sources.length) {
           el('offer-lookup-sources').innerHTML = '<p class="note" style="margin-top:.4rem">From: ' +
             draft.sources.map(function (s) {
@@ -594,57 +596,29 @@ export const PAGE = /* html */ `<!doctype html>
       .catch(function (e) { show('st-offer-lookup', 'err', e.message); });
   }
 
-  el('btn-offer-lookup').onclick = function () {
+  // Both fields feed one lookup, so the guard key is both of them — pasting
+  // a link after the name already fired should re-run with the page this
+  // time, but tabbing back through an unchanged form should not.
+  function runLookup(force) {
     var name = el('o-name').value.trim();
-    if (!name) return show('st-offer-lookup', 'err', 'Type the offer name first.');
-    lastLookedUpName = name;
-    lookupOfferFromContent(name);
-  };
+    var url = el('o-url').value.trim();
+    if (!name) {
+      if (force) show('st-offer-lookup', 'err', 'Type the offer name first.');
+      return;
+    }
+    var key = name + '||' + url;
+    if (!force && key === lastLookedUp) return;
+    lastLookedUp = key;
+    lookupOfferFromContent(name, url);
+  }
 
-  // Also fires on its own the moment you finish typing the name and click
-  // or tab elsewhere — you should not have to know a lookup button exists
-  // just to get the rest of the form filled in from your own material.
-  // Guarded against re-firing for a name that has not actually changed
-  // (tabbing through the form re-blurs this field without a real edit).
-  el('o-name').addEventListener('blur', function () {
-    var name = el('o-name').value.trim();
-    if (!name || name === lastLookedUpName) return;
-    lastLookedUpName = name;
-    lookupOfferFromContent(name);
-  });
+  el('btn-offer-lookup').onclick = function () { runLookup(true); };
 
-  el('btn-offer-discover').onclick = function () {
-    show('st-offer-discover', 'busy', 'Reading everything you’ve said… this can take a moment.');
-    el('offer-discover-results').innerHTML = '';
-    api('/api/creators/' + CID + '/offers/discover', { method: 'POST' })
-      .then(function (d) {
-        var found = d.offers || [];
-        if (!found.length) {
-          show('st-offer-discover', 'ok', 'Nothing new found — everything you sell that came up in your material is already added.');
-          return;
-        }
-        show('st-offer-discover', 'ok', 'Found ' + found.length + ' offer' + (found.length === 1 ? '' : 's') + ' not added yet:');
-        var box = el('offer-discover-results');
-        found.forEach(function (o) {
-          var n = document.createElement('div');
-          n.className = 'item';
-          n.innerHTML = '<h3>' + esc(o.name) + '</h3>' +
-            '<p class="note">Mentioned ' + o.mentions + ' time' + (o.mentions === 1 ? '' : 's') + (o.url ? ' — ' + esc(o.url) : '') + '</p>' +
-            '<div class="row" style="margin-top:.5rem"><button class="add-discovered" type="button">Add this offer</button></div>';
-          n.querySelector('.add-discovered').onclick = function () {
-            var details = el('offer-add-details');
-            details.open = true;
-            details.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            el('o-name').value = o.name;
-            if (o.url) el('o-url').value = o.url;
-            lastLookedUpName = o.name;
-            lookupOfferFromContent(o.name);
-          };
-          box.appendChild(n);
-        });
-      })
-      .catch(function (e) { show('st-offer-discover', 'err', e.message); });
-  };
+  // Also fires on its own the moment you finish filling either field and
+  // click or tab elsewhere — you should not have to know a lookup button
+  // exists just to get the rest of the form filled in.
+  el('o-name').addEventListener('blur', function () { runLookup(false); });
+  el('o-url').addEventListener('blur', function () { runLookup(false); });
 
   el('btn-offer').onclick = function () {
     var name = el('o-name').value.trim();
