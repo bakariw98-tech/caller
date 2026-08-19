@@ -226,6 +226,12 @@ export const PAGE = /* html */ `<!doctype html>
     </div>
     <div class="status" id="st-ve"></div>
     <div class="stats" id="ve-funnel" style="margin-top:1rem"></div>
+    <div class="row" style="margin-top:1rem">
+      <button id="btn-ve-testcall" class="ghost" type="button">Start a live voice test — no phone number needed</button>
+    </div>
+    <p class="note" style="margin-top:.4rem">Opens a real conversation with the qualification agent in this browser, using
+      the offers and posture above as they are right now — works even before a qualify number is registered or the mode
+      is enabled.</p>
   </section>
 
   <section>
@@ -343,6 +349,13 @@ export const PAGE = /* html */ `<!doctype html>
     show('st-ve', 'busy', 'Saving…');
     api('/api/creators/' + CID + '/voice-qualification', { method: 'PATCH', body: { objection_handling_posture: el('ve-posture').value } })
       .then(function () { show('st-ve', 'ok', 'Saved.'); return loadOverview(); })
+      .catch(function (e) { show('st-ve', 'err', e.message); });
+  };
+
+  el('btn-ve-testcall').onclick = function () {
+    show('st-ve', 'busy', 'Starting…');
+    api('/api/creators/' + CID + '/qualification-link', { method: 'POST' })
+      .then(function (d) { show('st-ve', 'ok', 'Opening…'); window.open(d.url, '_blank'); })
       .catch(function (e) { show('st-ve', 'err', e.message); });
   };
 

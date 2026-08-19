@@ -8,6 +8,7 @@ import { runLeadgenPipeline, CreatorNotFoundError } from '../leadgen/pipeline.js
 import { embedPassages, embedQuery, embeddingTextForItem, encodeVector, decodeVector, cosineSimilarity } from '../leadgen/embeddings.js';
 import { loadOffers, loadFullOffers, loadKnowledge, keywordScores, SEMANTIC_FLOOR } from '../leadgen/reply.js';
 import { syncChannel } from '../youtube/ingest.js';
+import { startWebQualificationCall } from '../telephony/qualification-call.js';
 import { toCsv } from '../leadgen/csv.js';
 
 export const leadgenRoute = new Hono<{ Bindings: Env }>();
@@ -556,6 +557,22 @@ leadgenRoute.patch('/api/creators/:id/voice-qualification', async (c) => {
   vals.push(creatorId);
   await db.prepare(`UPDATE creators SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
   return c.json({ ok: true });
+});
+
+/**
+ * A browser-based way to try the qualification call live, with no phone
+ * number involved — see workers/routes/talk.ts and
+ * startWebQualificationCall()'s own doc comments for why this exists.
+ * Does NOT require voice_qualification_mode to be on: this is a creator
+ * previewing/testing the call itself, the same relationship
+ * /api/leadgen/simulate has to the email reply.
+ */
+leadgenRoute.post('/api/creators/:id/qualification-link', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const result = await startWebQualificationCall(db, c.env, c.req.param('id'));
+  if ('error' in result) return c.json(result, 404);
+  const url = `${c.env.PUBLIC_BASE_URL}/talk/${result.callId}?token=${encodeURIComponent(result.mcpToken)}`;
+  return c.json({ url });
 });
 
 leadgenRoute.patch('/api/creators/:id/settings', async (c) => {

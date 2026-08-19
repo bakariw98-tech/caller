@@ -10,6 +10,7 @@ import { leadgenRoute } from './routes/leadgen.js';
 import { clickRoute } from './routes/click.js';
 import { emailConnectRoute } from './routes/email-connect.js';
 import { dashboardRoute } from './routes/dashboard.js';
+import { talkRoute } from './routes/talk.js';
 
 export function buildApp() {
   const app = new Hono<{ Bindings: Env }>();
@@ -26,6 +27,7 @@ export function buildApp() {
   app.route('/', clickRoute);
   app.route('/', emailConnectRoute);
   app.route('/', dashboardRoute);
+  app.route('/', talkRoute);
 
   app.notFound((c) => c.json({ error: 'not found' }, 404));
 

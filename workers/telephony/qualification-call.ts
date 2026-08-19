@@ -20,7 +20,8 @@ import type { RouteResult } from './call-router.js';
  */
 const QUALIFICATION_MAX_SESSION_SECONDS = 30 * 60;
 
-const QUAL_TOOL_SET = {
+/** Exported so workers/routes/talk.ts's browser-based test call reuses the exact same tool set, not a copy that could drift. */
+export const QUAL_TOOL_SET = {
   serverLabel: 'qualify',
   serverDescription: "The prospect's identity, discovery signal capture, and the offer-honesty gate for this call.",
   allowedTools: ['resolve_prospect', 'record_qualification_signal', 'record_call_outcome'],
@@ -101,4 +102,46 @@ export async function routeQualificationCall(
   });
 
   return { accepted: true, callId, reason: 'qualification_call' };
+}
+
+/**
+ * The browser-based counterpart to routeQualificationCall(), for testing
+ * (or, eventually, offering) the qualification conversation with no phone
+ * number involved at all — see workers/routes/talk.ts. There is no PSTN
+ * leg, no webhook, and no Durable Object holding this call open: xAI's
+ * ephemeral-client-secret path lets a browser connect to the realtime API
+ * directly over WebRTC, with our /mcp endpoint still doing everything the
+ * tool calls need exactly as it does for a phone call — MCP tool routing
+ * is transport-agnostic (see docs/XAI-API-NOTES.md), so nothing about the
+ * qualification-call.ts prompt, tools, or honesty gates changes.
+ *
+ * Only creates the `calls` row and mints our own long-lived qual MCP
+ * token here. The ephemeral xAI secret is deliberately NOT minted yet —
+ * those expire in roughly a minute, so it has to be minted at the moment
+ * the browser is actually about to connect (workers/routes/talk.ts's page
+ * load), not baked into a link that might sit unopened for a while.
+ */
+export async function startWebQualificationCall(
+  db: SqlDb,
+  env: Env,
+  creatorId: string,
+): Promise<{ callId: string; mcpToken: string } | { error: string }> {
+  const creator = await db.prepare('SELECT id FROM creators WHERE id = ?').get<{ id: string }>(creatorId);
+  if (!creator) return { error: 'creator not found' };
+
+  const callId = id('call');
+  await db
+    .prepare(
+      `INSERT INTO calls (id, xai_call_id, creator_id, customer_id, from_number, to_number, status, started_at, connected_at, kind)
+       VALUES (?, NULL, ?, NULL, 'web-test', 'web-test', 'active', ?, ?, 'qualification')`,
+    )
+    .run(callId, creatorId, now(), now());
+
+  // Longer TTL than the phone path's (8000s) is unnecessary — a test
+  // session lives minutes, not hours — but there's no reason to make it
+  // tighter either; this token only matters for the single browser tab
+  // that receives it.
+  const mcpToken = await mintQualCallToken(db, env.MCP_TOKEN_SECRET, 3600, { callId, creatorId });
+
+  return { callId, mcpToken };
 }
