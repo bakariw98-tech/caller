@@ -2,11 +2,35 @@ import { Hono } from 'hono';
 import type { Env } from '../env.js';
 import { wrapD1 } from '../db/d1-adapter.js';
 import { resolveToken } from '../mcp/auth.js';
-import { callTool, TOOL_DEFINITIONS, type ToolContext } from '../mcp/tools.js';
+import { callTool, TOOL_DEFINITIONS, type ToolContext, type ToolDefinition } from '../mcp/tools.js';
 import { callQualTool, QUAL_TOOL_DEFINITIONS, type QualToolContext } from '../mcp/qual-tools.js';
+import { callAssistantTool, ASSISTANT_TOOL_DEFINITIONS, type AssistantToolContext } from '../mcp/assistant-tools.js';
 import { id, now } from '../../src/util/ids.js';
 
 export const mcpRoute = new Hono<{ Bindings: Env }>();
+
+/**
+ * The tool list for a resolved session kind — extracted as a pure function
+ * so the fail-closed behavior on an unhandled kind is directly unit
+ * testable (tests/mcp-dispatch.test.ts) rather than only checkable by
+ * driving the whole Hono route. See tools/list's own comment on why this
+ * must never be an else-branch: a new session kind added without a case
+ * here must get NOTHING, not silently inherit whichever kind used to be
+ * last in the chain.
+ */
+export function toolDefinitionsForKind(kind: string): ToolDefinition[] {
+  switch (kind) {
+    case 'coach':
+      return TOOL_DEFINITIONS;
+    case 'qualify':
+      return QUAL_TOOL_DEFINITIONS;
+    case 'assistant':
+      return ASSISTANT_TOOL_DEFINITIONS;
+    default:
+      console.error('toolDefinitionsForKind: unhandled session kind', kind);
+      return [];
+  }
+}
 
 const PROTOCOL_VERSION = '2025-06-18';
 
@@ -93,7 +117,7 @@ async function handleRpc(env: Env, authHeader: string | undefined, rpc: JsonRpcR
     case 'tools/list': {
       const resolved = await resolveToken(db, env.MCP_TOKEN_SECRET, authHeader);
       if (!resolved) return error(rpc.id, -32001, 'Unauthorized');
-      const defs = resolved.kind === 'coach' ? TOOL_DEFINITIONS : QUAL_TOOL_DEFINITIONS;
+      const defs = toolDefinitionsForKind(resolved.kind);
       return result(rpc.id, {
         tools: defs.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
       });
@@ -133,9 +157,18 @@ async function handleRpc(env: Env, authHeader: string | undefined, rpc: JsonRpcR
             },
           };
           out = await callTool(ctx, name, args);
-        } else {
+        } else if (resolved.kind === 'qualify') {
           const ctx: QualToolContext = { db, session: resolved.session };
           out = await callQualTool(ctx, name, args);
+        } else if (resolved.kind === 'assistant') {
+          const ctx: AssistantToolContext = { db, session: resolved.session };
+          out = await callAssistantTool(ctx, name, args);
+        } else {
+          // Same fail-closed discipline as tools/list above: an unhandled
+          // kind must be a loud, explicit error, never fall through to
+          // whichever handler happens to be last.
+          console.error('tools/call: unhandled session kind', (resolved as { kind: string }).kind);
+          return error(rpc.id, -32001, 'Unauthorized');
         }
 
         return result(rpc.id, { content: [{ type: 'text', text: JSON.stringify(out.data) }], isError: out.isError ?? false });

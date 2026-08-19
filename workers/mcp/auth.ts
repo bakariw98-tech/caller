@@ -36,8 +36,32 @@ export interface McpQualSession {
   created_at: number;
 }
 
+/**
+ * The creator's own assistant — the session behind both talking to it from
+ * the dashboard and connecting it to an agent of their own. Deliberately
+ * has no call_id: it is not a call, nothing is metered, and no `calls` row
+ * is created for it (see mcp_assistant_sessions in schema.sql).
+ *
+ * expires_at NULL means a long-lived pasted key rather than a voice
+ * session, and is the one field that distinguishes the two. Everything
+ * downstream treats them identically on purpose — same creator scope, same
+ * tool set — so there is exactly one code path to get right.
+ */
+export interface McpAssistantSession {
+  token_hash: string;
+  creator_id: string;
+  label: string | null;
+  expires_at: number | null;
+  last_used_at: number | null;
+  revoked_at: number | null;
+  created_at: number;
+}
+
 /** What resolveToken() returns — tagged so mcp.ts can dispatch to the right tool set without guessing from field shape. */
-export type ResolvedSession = { kind: 'coach'; session: McpSession } | { kind: 'qualify'; session: McpQualSession };
+export type ResolvedSession =
+  | { kind: 'coach'; session: McpSession }
+  | { kind: 'qualify'; session: McpQualSession }
+  | { kind: 'assistant'; session: McpAssistantSession };
 
 export async function mintCallToken(
   db: SqlDb,
@@ -82,7 +106,45 @@ export async function mintQualCallToken(
   return token;
 }
 
-/** Tries mcp_sessions (coach calls) then mcp_qual_sessions (qualification calls) — the two token spaces never overlap. */
+/**
+ * Mints a credential for the creator's own assistant.
+ *
+ * ttlSeconds null makes it permanent — that is the pasted-into-your-own-
+ * agent key, and it is genuinely more dangerous than the hour-long call
+ * tokens above: it can edit everything and (via the assistant tool set)
+ * send mail as the creator, for as long as it exists. It is stored only as
+ * an HMAC, shown to the creator exactly once, and revocable individually;
+ * the plaintext returned here is the only time it can ever be read.
+ */
+export async function mintAssistantToken(
+  db: SqlDb,
+  tokenSecret: string,
+  params: { creatorId: string; ttlSeconds: number | null; label?: string | null },
+): Promise<string> {
+  const token = randomToken(32);
+  await db
+    .prepare(
+      `INSERT INTO mcp_assistant_sessions (token_hash, creator_id, label, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(
+      hmacHex(tokenSecret, token),
+      params.creatorId,
+      params.label ?? null,
+      params.ttlSeconds === null ? null : now() + params.ttlSeconds,
+      now(),
+    );
+  return token;
+}
+
+/** Revokes one assistant credential by its plaintext token — used when a voice session ends. */
+export async function revokeAssistantToken(db: SqlDb, tokenSecret: string, token: string): Promise<void> {
+  await db
+    .prepare('UPDATE mcp_assistant_sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL')
+    .run(now(), hmacHex(tokenSecret, token));
+}
+
+/** Tries mcp_sessions (coach calls), then mcp_qual_sessions (qualification calls), then mcp_assistant_sessions — the token spaces never overlap. */
 export async function resolveToken(
   db: SqlDb,
   tokenSecret: string,
@@ -103,6 +165,24 @@ export async function resolveToken(
   if (qual) {
     if (qual.revoked_at || qual.expires_at < now()) return null;
     return { kind: 'qualify', session: qual };
+  }
+
+  const assistant = await db
+    .prepare('SELECT * FROM mcp_assistant_sessions WHERE token_hash = ?')
+    .get<McpAssistantSession>(hash);
+  if (assistant) {
+    // expires_at NULL is a long-lived key and never times out; only an
+    // explicit revoke stops it.
+    if (assistant.revoked_at) return null;
+    if (assistant.expires_at !== null && assistant.expires_at < now()) return null;
+    // Recorded so a creator can see a key being used and recognise it — or
+    // not, and revoke it. Best-effort: a failed bookkeeping write must never
+    // deny an otherwise-valid credential.
+    await db
+      .prepare('UPDATE mcp_assistant_sessions SET last_used_at = ? WHERE token_hash = ?')
+      .run(now(), hash)
+      .catch(() => {});
+    return { kind: 'assistant', session: assistant };
   }
 
   return null;

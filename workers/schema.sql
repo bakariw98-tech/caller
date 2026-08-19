@@ -743,3 +743,30 @@ CREATE INDEX IF NOT EXISTS idx_mcp_qual_sessions_call ON mcp_qual_sessions(call_
 ALTER TABLE prospect_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply';
 ALTER TABLE prospect_messages ADD COLUMN gmail_message_id TEXT;
 ALTER TABLE prospect_messages ADD COLUMN gmail_thread_id TEXT;
+
+-- The creator's own assistant: one session row per way of reaching it.
+--
+-- Deliberately ONE table for two lifetimes rather than two tables, because
+-- both produce the same thing -- a creator-scoped credential carrying the
+-- same tool set -- and splitting them would mean two resolveToken() probes
+-- and two chances for the two paths to drift apart:
+--   * a voice session from the dashboard: expires_at set (~1h), label NULL
+--   * a key pasted into the creator's own agent: expires_at NULL (never
+--     expires), label set so they can tell their keys apart and revoke one
+-- Unlike mcp_sessions/mcp_qual_sessions there is NO call_id, and no `calls`
+-- row is created: this is not a call, nothing is metered, and a synthetic
+-- call row would silently inflate the voice-escalation funnel counts that
+-- read from `calls`.
+--
+-- last_used_at exists for the durable keys specifically -- it is the only
+-- way a creator can notice a key being used that they do not recognise.
+CREATE TABLE IF NOT EXISTS mcp_assistant_sessions (
+  token_hash   TEXT PRIMARY KEY,
+  creator_id   TEXT NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+  label        TEXT,
+  expires_at   INTEGER,
+  last_used_at INTEGER,
+  revoked_at   INTEGER,
+  created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_assistant_sessions_creator ON mcp_assistant_sessions(creator_id);

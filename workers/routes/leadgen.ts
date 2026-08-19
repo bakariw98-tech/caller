@@ -9,6 +9,7 @@ import { embedPassages, embedQuery, embeddingTextForItem, encodeVector, decodeVe
 import { loadOffers, loadFullOffers, loadKnowledge, keywordScores, SEMANTIC_FLOOR } from '../leadgen/reply.js';
 import { syncChannel } from '../youtube/ingest.js';
 import { startWebQualificationCall } from '../telephony/qualification-call.js';
+import { mintAssistantToken } from '../mcp/auth.js';
 import { extractOfferDetails } from '../leadgen/offer-extract.js';
 import { getTranscript } from '../youtube/client.js';
 import { toCsv } from '../leadgen/csv.js';
@@ -640,6 +641,26 @@ leadgenRoute.post('/api/creators/:id/qualification-link', async (c) => {
   const result = await startWebQualificationCall(db, c.env, c.req.param('id'));
   if ('error' in result) return c.json(result, 404);
   const url = `${c.env.PUBLIC_BASE_URL}/talk/${result.callId}?token=${encodeURIComponent(result.mcpToken)}`;
+  return c.json({ url });
+});
+
+/**
+ * Mints a fresh, short-lived (1h) assistant credential and returns the
+ * browser session link — the dashboard's "Talk to your assistant" button
+ * calls this, mirroring qualification-link just above. Deliberately
+ * separate from Part 3's durable creator_mcp_keys mint: a voice session
+ * from the dashboard should not create a long-lived credential a creator
+ * never explicitly asked for, and a pasted-into-an-agent key should not
+ * silently expire mid-use.
+ */
+leadgenRoute.post('/api/creators/:id/assistant/link', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const creator = await db.prepare('SELECT id FROM creators WHERE id = ?').get<{ id: string }>(creatorId);
+  if (!creator) return c.json({ error: 'creator not found' }, 404);
+
+  const token = await mintAssistantToken(db, c.env.MCP_TOKEN_SECRET, { creatorId, ttlSeconds: 3600 });
+  const url = `${c.env.PUBLIC_BASE_URL}/assistant/${creatorId}?token=${encodeURIComponent(token)}`;
   return c.json({ url });
 });
 

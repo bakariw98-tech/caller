@@ -104,6 +104,11 @@ export const PAGE = /* html */ `<!doctype html>
   <h1 id="biz">Loading…</h1>
   <p class="sub" id="sub"></p>
 
+  <div class="row" style="margin-bottom:1rem">
+    <button id="btn-assistant" type="button">🎙️ Talk to your assistant</button>
+  </div>
+  <p class="status" id="st-assistant"></p>
+
   <section>
     <h2>Status</h2>
     <p class="note" id="email-line"></p>
@@ -379,6 +384,16 @@ export const PAGE = /* html */ `<!doctype html>
     api('/api/creators/' + CID + '/qualification-link', { method: 'POST' })
       .then(function (d) { show('st-ve', 'ok', 'Opening…'); window.open(d.url, '_blank'); })
       .catch(function (e) { show('st-ve', 'err', e.message); });
+  };
+
+  // Reachable from anywhere on the page, always — this is meant to be the
+  // ordinary way of running the dashboard, not a feature buried in one
+  // section. Opens in a new tab, same as the qualification test call above.
+  el('btn-assistant').onclick = function () {
+    show('st-assistant', 'busy', 'Starting…');
+    api('/api/creators/' + CID + '/assistant/link', { method: 'POST' })
+      .then(function (d) { show('st-assistant', 'ok', 'Opening…'); window.open(d.url, '_blank'); })
+      .catch(function (e) { show('st-assistant', 'err', e.message); });
   };
 
   // ---- youtube
