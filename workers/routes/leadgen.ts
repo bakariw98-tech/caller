@@ -6,7 +6,7 @@ import type { Creator } from '../../src/domain/types.js';
 import { extractFreeContent, NoUsableContentError, type FreeContentSource } from '../leadgen/extract.js';
 import { runLeadgenPipeline, CreatorNotFoundError } from '../leadgen/pipeline.js';
 import { embedPassages, embedQuery, embeddingTextForItem, encodeVector, decodeVector, cosineSimilarity } from '../leadgen/embeddings.js';
-import { loadOffers, loadKnowledge, keywordScores, SEMANTIC_FLOOR } from '../leadgen/reply.js';
+import { loadOffers, loadFullOffers, loadKnowledge, keywordScores, SEMANTIC_FLOOR } from '../leadgen/reply.js';
 import { syncChannel } from '../youtube/ingest.js';
 import { toCsv } from '../leadgen/csv.js';
 
@@ -22,6 +22,8 @@ leadgenRoute.use('/api/*', async (c, next) => {
 
 // ---------------------------------------------------------------- offers --
 
+const CTA_TIERS = new Set(['low_ticket', 'course', 'high_ticket_application', 'very_high_ticket']);
+
 leadgenRoute.post('/api/creators/:id/offers', async (c) => {
   const db = wrapD1(c.env.DB);
   const creatorId = c.req.param('id');
@@ -35,8 +37,10 @@ leadgenRoute.post('/api/creators/:id/offers', async (c) => {
   const offerId = id('offer');
   await db
     .prepare(
-      `INSERT INTO offers (id, creator_id, kind, name, who_for, covers, price_text, url, is_free, active, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+      `INSERT INTO offers
+         (id, creator_id, kind, name, who_for, covers, price_text, url, is_free, active, created_at,
+          not_who_for, objections_and_responses, recommend_when, dont_recommend_when, cta_tier)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       offerId,
@@ -49,13 +53,46 @@ leadgenRoute.post('/api/creators/:id/offers', async (c) => {
       b.url ? String(b.url) : null,
       b.is_free ? 1 : 0,
       now(),
+      b.not_who_for ? String(b.not_who_for) : null,
+      b.objections_and_responses ? String(b.objections_and_responses) : null,
+      b.recommend_when ? String(b.recommend_when) : null,
+      b.dont_recommend_when ? String(b.dont_recommend_when) : null,
+      CTA_TIERS.has(String(b.cta_tier)) ? String(b.cta_tier) : 'course',
     );
   return c.json({ id: offerId, name }, 201);
 });
 
 leadgenRoute.get('/api/creators/:id/offers', async (c) => {
   const db = wrapD1(c.env.DB);
-  return c.json({ offers: await loadOffers(db, c.req.param('id')) });
+  return c.json({ offers: await loadFullOffers(db, c.req.param('id')) });
+});
+
+/**
+ * Sales-truth fields are the kind of thing a creator iterates on, not
+ * something they get right once at creation — an allow-list PATCH, same
+ * pattern as /api/creators/:id/settings below, rather than requiring a
+ * delete-and-recreate for every wording tweak.
+ */
+leadgenRoute.patch('/api/creators/:id/offers/:offerId', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const allowed = ['name', 'who_for', 'covers', 'price_text', 'url', 'not_who_for', 'objections_and_responses', 'recommend_when', 'dont_recommend_when'];
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  for (const key of allowed) {
+    if (key in b) {
+      sets.push(`${key} = ?`);
+      vals.push(b[key] ? String(b[key]) : null);
+    }
+  }
+  if ('cta_tier' in b) {
+    sets.push('cta_tier = ?');
+    vals.push(CTA_TIERS.has(String(b.cta_tier)) ? String(b.cta_tier) : 'course');
+  }
+  if (!sets.length) return c.json({ error: 'nothing to update' }, 400);
+  vals.push(c.req.param('offerId'), c.req.param('id'));
+  await db.prepare(`UPDATE offers SET ${sets.join(', ')} WHERE id = ? AND creator_id = ?`).run(...vals);
+  return c.json({ ok: true });
 });
 
 // ------------------------------------------------------------- ingestion --
@@ -412,7 +449,113 @@ leadgenRoute.get('/api/creators/:id/overview', async (c) => {
       now() - 30 * 86400,
     );
 
-  return c.json({ creator, email: conn ?? null, counts });
+  const voiceRow = await db
+    .prepare('SELECT voice_qualification_mode, objection_handling_posture FROM creators WHERE id = ?')
+    .get<{ voice_qualification_mode: number; objection_handling_posture: string }>(creatorId);
+  const qualifyNumber = await db
+    .prepare("SELECT e164 FROM phone_numbers WHERE creator_id = ? AND purpose = 'qualify' LIMIT 1")
+    .get<{ e164: string }>(creatorId);
+
+  const since30d = now() - 30 * 86400;
+  // Rolling 30 days, matching leads_last_30d above. Every count here is
+  // PEOPLE or CALLS, never a rate presented as if it were a fact on its
+  // own — see the dashboard's own framing rule: lead with "voluntarily
+  // took the next step", never a bare "qualification rate", which is
+  // gameable by loosening the bar in a way a count of real actions is not.
+  interface VoiceFunnelRow {
+    invitations_sent: number;
+    calls_accepted: number;
+    calls_started: number;
+    calls_completed: number;
+    qualified_conversations: number;
+    offers_presented: number;
+    objections_raised: number;
+    next_steps_accepted: number;
+    cost_cents_estimate: number;
+  }
+  const voice = await db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM prospects WHERE creator_id = ? AND call_code_issued_at >= ?) AS invitations_sent,
+         (SELECT COUNT(DISTINCT c.prospect_id) FROM calls c
+            WHERE c.creator_id = ? AND c.kind = 'qualification' AND c.started_at >= ? AND c.prospect_id IS NOT NULL) AS calls_accepted,
+         (SELECT COUNT(*) FROM calls WHERE creator_id = ? AND kind = 'qualification' AND started_at >= ?) AS calls_started,
+         (SELECT COUNT(*) FROM calls WHERE creator_id = ? AND kind = 'qualification' AND started_at >= ? AND status = 'ended') AS calls_completed,
+         (SELECT COUNT(DISTINCT c.prospect_id) FROM calls c JOIN prospects p ON p.id = c.prospect_id
+            WHERE c.creator_id = ? AND c.kind = 'qualification' AND c.started_at >= ? AND p.qualified_at IS NOT NULL) AS qualified_conversations,
+         (SELECT COUNT(*) FROM calls WHERE creator_id = ? AND kind = 'qualification' AND started_at >= ? AND offer_presented = 1) AS offers_presented,
+         (SELECT COUNT(*) FROM calls WHERE creator_id = ? AND kind = 'qualification' AND started_at >= ? AND objection_raised = 1) AS objections_raised,
+         (SELECT COUNT(*) FROM calls WHERE creator_id = ? AND kind = 'qualification' AND started_at >= ? AND next_step_accepted = 1) AS next_steps_accepted,
+         (SELECT COALESCE(SUM(cost_cents_estimate), 0) FROM calls WHERE creator_id = ? AND kind = 'qualification' AND started_at >= ?) AS cost_cents_estimate`,
+    )
+    .get<VoiceFunnelRow>(
+      creatorId, since30d,
+      creatorId, since30d,
+      creatorId, since30d,
+      creatorId, since30d,
+      creatorId, since30d,
+      creatorId, since30d,
+      creatorId, since30d,
+      creatorId, since30d,
+      creatorId, since30d,
+    );
+
+  // Computed here, never stored: dividing by zero is "no data yet", not a
+  // cost of zero, and the plan is explicit that this must never be
+  // confused with a revenue-attribution number — there is no price paid
+  // signal anywhere in this platform, only cost.
+  const costPerVoiceQualifiedLead =
+    voice && voice.qualified_conversations > 0 ? Math.round(voice.cost_cents_estimate / voice.qualified_conversations) : null;
+
+  return c.json({
+    creator,
+    email: conn ?? null,
+    counts,
+    voice: {
+      enabled: Boolean(voiceRow?.voice_qualification_mode),
+      objection_handling_posture: voiceRow?.objection_handling_posture ?? 'soft',
+      qualify_number: qualifyNumber?.e164 ?? null,
+      funnel: voice ?? null,
+      cost_per_voice_qualified_lead_cents: costPerVoiceQualifiedLead,
+    },
+  });
+});
+
+/**
+ * Refuses to enable unless a qualify number and a Gmail connection both
+ * already exist — closing the exact misconfiguration gap
+ * routeInboundMessage() otherwise only detects at send time (see
+ * workers/leadgen/inbound.ts's console.error fallback). Disabling has no
+ * such requirement.
+ */
+leadgenRoute.patch('/api/creators/:id/voice-qualification', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const b = (await c.req.json().catch(() => ({}))) as { enabled?: boolean; objection_handling_posture?: string };
+
+  if (b.enabled) {
+    const qualifyNumber = await db
+      .prepare("SELECT 1 FROM phone_numbers WHERE creator_id = ? AND purpose = 'qualify' LIMIT 1")
+      .get(creatorId);
+    const gmail = await db.prepare('SELECT 1 FROM email_connections WHERE creator_id = ?').get(creatorId);
+    if (!qualifyNumber) return c.json({ error: 'Add a qualify-purpose phone number before enabling voice escalation.' }, 400);
+    if (!gmail) return c.json({ error: 'Connect Gmail before enabling voice escalation — the hook email needs somewhere to send from.' }, 400);
+  }
+
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  if ('enabled' in b) {
+    sets.push('voice_qualification_mode = ?');
+    vals.push(b.enabled ? 1 : 0);
+  }
+  if (b.objection_handling_posture === 'soft' || b.objection_handling_posture === 'assertive') {
+    sets.push('objection_handling_posture = ?');
+    vals.push(b.objection_handling_posture);
+  }
+  if (!sets.length) return c.json({ error: 'nothing to update' }, 400);
+  vals.push(creatorId);
+  await db.prepare(`UPDATE creators SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  return c.json({ ok: true });
 });
 
 leadgenRoute.patch('/api/creators/:id/settings', async (c) => {

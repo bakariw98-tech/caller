@@ -164,6 +164,20 @@ export const PAGE = /* html */ `<!doctype html>
       <label>What it covers</label><textarea id="o-covers" style="min-height:4rem" placeholder="be precise — it will never claim more than this"></textarea>
       <label>Price</label><input id="o-price" placeholder="e.g. $390 one-time">
       <label>Link</label><input id="o-url" placeholder="https://">
+      <p class="note" style="margin-top:.9rem"><b>For qualification calls</b> — used only when Voice escalation
+        (below) is on. Everything here is spoken from directly; nothing is invented beyond it.</p>
+      <label>Who it's NOT for</label><input id="o-not-who" placeholder="rules out a bad-fit recommendation before it happens">
+      <label>Recommend when</label><textarea id="o-recommend-when" style="min-height:3rem" placeholder="the situation that makes this the right call"></textarea>
+      <label>Don't recommend when</label><textarea id="o-dont-recommend-when" style="min-height:3rem" placeholder="when it would be an honest no"></textarea>
+      <label>Known objections and how to answer them</label>
+      <textarea id="o-objections" style="min-height:4rem" placeholder="e.g. &quot;Too expensive&quot; — because it replaces [X], which normally costs more on its own."></textarea>
+      <label>Next-step style</label>
+      <select id="o-cta-tier">
+        <option value="low_ticket">Low ticket — a direct checkout link</option>
+        <option value="course" selected>Course — program details + enrollment link</option>
+        <option value="high_ticket_application">High ticket — an application, not a checkout</option>
+        <option value="very_high_ticket">Very high ticket — a follow-up call with the team</option>
+      </select>
       <div class="row" style="margin-top:.7rem"><button id="btn-offer">Add offer</button></div>
       <div class="status" id="st-offer"></div>
     </details>
@@ -185,6 +199,33 @@ export const PAGE = /* html */ `<!doctype html>
     <div class="stats" id="lead-funnel"></div>
     <div class="row" style="margin-top:.8rem"><a id="btn-export-csv" class="ghost" style="text-decoration:none;font-weight:600;padding:.55rem 1rem;border-radius:8px;border:1px solid #1a1a1c;color:#1a1a1c" href="#">Export CSV</a></div>
     <div id="prospects" style="margin-top:1rem"></div>
+  </section>
+
+  <section>
+    <h2>Voice escalation</h2>
+    <p class="note">When someone writes in showing real interest, instead of a written reply they get a warm
+      invitation to call — and the call itself is the real sales conversation: discovery, a diagnosis they
+      confirm out loud, and only then an honestly-earned offer. This is not a smaller version of email; it's
+      where the actual conversion happens.</p>
+    <p id="ve-status" class="note"></p>
+    <div id="ve-setup">
+      <label>Qualify phone number (E.164, e.g. +15551234567)</label>
+      <input id="ve-e164" placeholder="+1…">
+      <label>Signing secret (from the xAI console, shown once at creation)</label>
+      <input id="ve-secret" placeholder="paste the webhook signing secret">
+      <div class="row" style="margin-top:.6rem"><button id="btn-ve-number" class="ghost" type="button">Register number</button></div>
+    </div>
+    <label style="margin-top:.9rem">Objection posture</label>
+    <select id="ve-posture">
+      <option value="soft">Soft — back off after one honest answer (default)</option>
+      <option value="assertive">Assertive — a couple of genuine re-tries before backing off</option>
+    </select>
+    <div class="row" style="margin-top:.7rem">
+      <button id="btn-ve-toggle">Enable voice escalation</button>
+      <button id="btn-ve-posture" class="ghost" type="button">Save posture</button>
+    </div>
+    <div class="status" id="st-ve"></div>
+    <div class="stats" id="ve-funnel" style="margin-top:1rem"></div>
   </section>
 
   <section>
@@ -245,8 +286,65 @@ export const PAGE = /* html */ `<!doctype html>
       el('s-coach').value = d.creator.coach_name || '';
       el('s-audience').value = d.creator.audience || '';
       el('s-style').value = d.creator.teaching_style || '';
+      renderVoice(d.voice);
     });
   }
+
+  // ---- voice escalation
+  function renderVoice(v) {
+    v = v || { enabled: false, funnel: null };
+    el('ve-posture').value = v.objection_handling_posture || 'soft';
+    el('btn-ve-toggle').textContent = v.enabled ? 'Disable voice escalation' : 'Enable voice escalation';
+    el('ve-setup').style.display = v.qualify_number ? 'none' : 'block';
+    el('ve-status').innerHTML = v.enabled
+      ? '<span class="pill on">On</span> Calling in on <b>' + esc(v.qualify_number || '') + '</b>.'
+      : (v.qualify_number
+          ? '<span class="pill off">Off</span> Number registered (' + esc(v.qualify_number) + ') but not yet enabled.'
+          : '<span class="pill off">Off</span> Register a qualify number below, then enable.');
+
+    var f = v.funnel;
+    var box = el('ve-funnel');
+    if (!f || !v.enabled) { box.innerHTML = ''; return; }
+    // Framing: lead with what people actually DID — voluntarily took the
+    // next step — never a bare "qualification rate", which is gameable by
+    // loosening the bar in a way a count of real actions is not. No
+    // revenue-attribution number is shown; this platform has no price-paid
+    // signal to compute one honestly from.
+    box.innerHTML =
+      '<div class="stat"><b>' + f.invitations_sent + '</b><span>call invitations sent (30d)</span></div>' +
+      '<div class="stat"><b>' + f.calls_started + '</b><span>calls started</span></div>' +
+      '<div class="stat"><b>' + f.calls_completed + '</b><span>calls completed</span></div>' +
+      '<div class="stat"><b>' + f.offers_presented + '</b><span>offers discussed live</span></div>' +
+      '<div class="stat"><b>' + f.next_steps_accepted + '</b><span>people who voluntarily took the next step</span></div>' +
+      (v.cost_per_voice_qualified_lead_cents != null
+        ? '<div class="stat"><b>$' + (v.cost_per_voice_qualified_lead_cents / 100).toFixed(2) + '</b><span>cost per voice-qualified lead</span></div>'
+        : '');
+  }
+
+  el('btn-ve-number').onclick = function () {
+    var e164 = el('ve-e164').value.trim();
+    var secret = el('ve-secret').value.trim();
+    if (!e164 || !secret) return show('st-ve', 'err', 'Give both the number and the signing secret.');
+    show('st-ve', 'busy', 'Registering…');
+    api('/api/creators/' + CID + '/phone-number/manual', { method: 'POST', body: { e164: e164, signing_secret: secret, purpose: 'qualify' } })
+      .then(function () { show('st-ve', 'ok', 'Registered. You can enable voice escalation now.'); el('ve-e164').value = ''; el('ve-secret').value = ''; return loadOverview(); })
+      .catch(function (e) { show('st-ve', 'err', e.message); });
+  };
+
+  el('btn-ve-toggle').onclick = function () {
+    var enabling = el('btn-ve-toggle').textContent.indexOf('Enable') === 0;
+    show('st-ve', 'busy', 'Saving…');
+    api('/api/creators/' + CID + '/voice-qualification', { method: 'PATCH', body: { enabled: enabling } })
+      .then(function () { show('st-ve', 'ok', enabling ? 'Voice escalation is on.' : 'Voice escalation is off.'); return loadOverview(); })
+      .catch(function (e) { show('st-ve', 'err', e.message); });
+  };
+
+  el('btn-ve-posture').onclick = function () {
+    show('st-ve', 'busy', 'Saving…');
+    api('/api/creators/' + CID + '/voice-qualification', { method: 'PATCH', body: { objection_handling_posture: el('ve-posture').value } })
+      .then(function () { show('st-ve', 'ok', 'Saved.'); return loadOverview(); })
+      .catch(function (e) { show('st-ve', 'err', e.message); });
+  };
 
   // ---- youtube
   function loadYoutube() {
@@ -444,9 +542,12 @@ export const PAGE = /* html */ `<!doctype html>
       name: name, who_for: el('o-who').value.trim(), covers: el('o-covers').value.trim(),
       price_text: el('o-price').value.trim(), url: el('o-url').value.trim(),
       is_free: el('o-free').value === '1',
+      not_who_for: el('o-not-who').value.trim(), recommend_when: el('o-recommend-when').value.trim(),
+      dont_recommend_when: el('o-dont-recommend-when').value.trim(), objections_and_responses: el('o-objections').value.trim(),
+      cta_tier: el('o-cta-tier').value,
     }}).then(function () {
       show('st-offer', 'ok', 'Added.');
-      ['o-name','o-who','o-covers','o-price','o-url'].forEach(function (i) { el(i).value = ''; });
+      ['o-name','o-who','o-covers','o-price','o-url','o-not-who','o-recommend-when','o-dont-recommend-when','o-objections'].forEach(function (i) { el(i).value = ''; });
       return loadOffers().then(loadKnowledge).then(loadOverview);
     }).catch(function (e) { show('st-offer', 'err', e.message); });
   };
