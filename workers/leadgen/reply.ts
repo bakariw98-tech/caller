@@ -545,6 +545,8 @@ export async function generateReply(params: {
   prospect: ProspectContext;
   history: { direction: string; body: string }[];
   offerLink: (offerId: string) => string;
+  /** See buildReplyInstructions()'s own doc comment. Defaults to 'email'. */
+  channel?: 'email' | 'post_call';
 }): Promise<GeneratedReply> {
   const offersForReply: OfferForReply[] = params.offers.map((o) => ({
     id: o.id,
@@ -576,6 +578,7 @@ export async function generateReply(params: {
     offers: offersForReply,
     prospect: params.prospect,
     terminology: params.terminology,
+    channel: params.channel,
   });
 
   const thread = params.history.length
@@ -585,6 +588,8 @@ export async function generateReply(params: {
         '',
       ].join('\n')
     : '';
+
+  const userIntro = params.channel === 'post_call' ? 'Internal recap of the call you just had with them (not their own words):' : 'They have just written:';
 
   const { value, usage } = await chatCompletionJson<{
     body: string;
@@ -611,7 +616,7 @@ export async function generateReply(params: {
   }>(params.apiBase, params.apiKey, {
     model: params.model,
     system,
-    user: `${thread}They have just written:\n\n${params.question}`,
+    user: `${thread}${userIntro}\n\n${params.question}`,
     schemaName: 'lead_reply',
     schema: replyJson as unknown as Record<string, unknown>,
   });
@@ -744,4 +749,31 @@ export async function loadOffers(db: SqlDb, creatorId: string): Promise<OfferRow
   return db
     .prepare('SELECT id, name, who_for, covers, price_text, url, is_free FROM offers WHERE creator_id = ? AND active = 1')
     .all<OfferRow>(creatorId);
+}
+
+/**
+ * The full per-offer sales-truth playbook — everything a qualification call
+ * needs front-loaded at call start (the voice prompt is built once, never
+ * rebuilt mid-call). Deliberately a separate loader from loadOffers()
+ * rather than widening OfferRow/that query: email's prompt is rebuilt every
+ * turn, and giving it five more fields of objection-handling material it
+ * never uses would grow every single email turn's cost for a call-only
+ * feature. See workers/leadgen/call-prompt.ts for how this gets used.
+ */
+export interface FullOfferRow extends OfferRow {
+  not_who_for: string | null;
+  objections_and_responses: string | null;
+  recommend_when: string | null;
+  dont_recommend_when: string | null;
+  cta_tier: string;
+}
+
+export async function loadFullOffers(db: SqlDb, creatorId: string): Promise<FullOfferRow[]> {
+  return db
+    .prepare(
+      `SELECT id, name, who_for, covers, price_text, url, is_free,
+              not_who_for, objections_and_responses, recommend_when, dont_recommend_when, cta_tier
+         FROM offers WHERE creator_id = ? AND active = 1`,
+    )
+    .all<FullOfferRow>(creatorId);
 }

@@ -10,6 +10,7 @@ import { activeBudget, grantTrialMinutes } from '../billing/promotional.js';
 import { mintCallToken } from '../mcp/auth.js';
 import type { StartCallParams } from '../durable-objects/call-session.js';
 import type { IncomingCallEvent } from '../../src/xai/webhook.js';
+import { routeQualificationCall } from './qualification-call.js';
 
 const ANON_SECONDS_WITH_TRIAL_FUNDING = 90;
 const ANON_SECONDS_WITHOUT_FUNDING = 45;
@@ -36,6 +37,16 @@ export async function routeIncomingCall(db: SqlDb, env: Env, event: IncomingCall
     ? await db.prepare('SELECT * FROM phone_numbers WHERE e164 = ?').get<PhoneNumber>(event.to)
     : undefined;
   if (!number) return { accepted: false, callId: '', reason: 'unknown_destination_number' };
+
+  // Branches before any course lookup: a leadgen-only creator with no
+  // coaching product would otherwise be wrongly rejected by the
+  // course-requirement check below just for calling their own escalation
+  // number. See workers/telephony/qualification-call.ts for the rest of
+  // this path — deliberately a separate file rather than growing this one
+  // into a grab-bag of unrelated call kinds.
+  if (number.purpose === 'qualify') {
+    return routeQualificationCall(db, env, event, number);
+  }
 
   const creator = await db.prepare('SELECT * FROM creators WHERE id = ?').get<Creator>(number.creator_id);
   if (!creator) return { accepted: false, callId: '', reason: 'creator_missing' };

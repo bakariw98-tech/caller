@@ -3,6 +3,27 @@
  * the config singleton (Workers has no process.env-backed global config;
  * everything comes from the per-request Env).
  */
+/** Defaults reproduce the coach's original hardcoded tool set exactly — see StartCallParams.toolSet for the qualification call's own values. */
+const DEFAULT_TOOL_SET: SessionToolSet = {
+  serverLabel: 'coach',
+  serverDescription: "The caller's position in the course, the creator's curriculum, and progress recording.",
+  allowedTools: [
+    'get_caller_state',
+    'get_current_step',
+    'get_step_by_position',
+    'search_curriculum',
+    'diagnose_problem',
+    'record_progress',
+    'request_human',
+  ],
+};
+
+export interface SessionToolSet {
+  serverLabel: string;
+  serverDescription: string;
+  allowedTools: string[];
+}
+
 export interface SessionConfigInputs {
   instructions: string;
   voice: string;
@@ -10,9 +31,12 @@ export interface SessionConfigInputs {
   mcpUrl: string;
   reasoningEffort?: 'high' | 'none';
   idleTimeoutMs: number;
+  /** Which MCP tools this call is allowed to see and call. Defaults to the coach's own set. */
+  toolSet?: SessionToolSet;
 }
 
 export function buildSessionUpdate(inputs: SessionConfigInputs): Record<string, unknown> {
+  const toolSet = inputs.toolSet ?? DEFAULT_TOOL_SET;
   return {
     type: 'session.update',
     session: {
@@ -30,19 +54,10 @@ export function buildSessionUpdate(inputs: SessionConfigInputs): Record<string, 
         {
           type: 'mcp',
           server_url: inputs.mcpUrl,
-          server_label: 'coach',
-          server_description:
-            "The caller's position in the course, the creator's curriculum, and progress recording.",
+          server_label: toolSet.serverLabel,
+          server_description: toolSet.serverDescription,
           authorization: `Bearer ${inputs.mcpToken}`,
-          allowed_tools: [
-            'get_caller_state',
-            'get_current_step',
-            'get_step_by_position',
-            'search_curriculum',
-            'diagnose_problem',
-            'record_progress',
-            'request_human',
-          ],
+          allowed_tools: toolSet.allowedTools,
         },
       ],
     },

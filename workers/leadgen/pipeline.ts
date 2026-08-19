@@ -31,6 +31,8 @@ export interface RunPipelineParams {
   persist?: boolean;
   /** Gmail message id, when this came from email — stored so the poller can check "have I answered this before". */
   sourceMessageId?: string | null;
+  /** See buildReplyInstructions()'s doc comment. Defaults to 'email' — voice escalation's post-call follow-up passes 'post_call'. */
+  channel?: 'email' | 'post_call';
 }
 
 export interface PipelineResult {
@@ -157,6 +159,7 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
     // Signed so a click cannot be forged into another creator's attribution.
     offerLink: (offerId) =>
       `${params.publicBaseUrl}/r/${offerId}.${prospect ? prospect.id : 'anon'}.${hmacHex(params.mcpTokenSecret, `${offerId}:${prospect ? prospect.id : 'anon'}`).slice(0, 16)}`,
+    channel: params.channel,
   });
 
   // The model's read and the deterministic check are ORed: either one is
@@ -211,20 +214,34 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
       .prepare('UPDATE prospects SET last_asked_about = ?, asked_dimensions_json = ? WHERE id = ?')
       .run(nullIfBlank(s.asked_about), JSON.stringify(askedDimensions), prospect.id);
 
+    // 'call_recap' rather than the default 'reply': a post-call follow-up's
+    // "question" is this system's own internal recap of the call, never
+    // something the prospect actually wrote. Tagging it distinctly keeps
+    // the lead record honest — a creator glancing at message history must
+    // never be able to mistake this for a real inbound message.
     await db
       .prepare(
-        `INSERT INTO prospect_messages (id, prospect_id, creator_id, direction, subject, body, source_message_id, created_at)
-         VALUES (?, ?, ?, 'inbound', ?, ?, ?, ?)`,
+        `INSERT INTO prospect_messages (id, prospect_id, creator_id, direction, subject, body, source_message_id, created_at, kind)
+         VALUES (?, ?, ?, 'inbound', ?, ?, ?, ?, ?)`,
       )
-      .run(id('msg'), prospect.id, creatorId, params.subject ?? null, question, params.sourceMessageId ?? null, now());
+      .run(
+        id('msg'),
+        prospect.id,
+        creatorId,
+        params.subject ?? null,
+        question,
+        params.sourceMessageId ?? null,
+        now(),
+        params.channel === 'post_call' ? 'call_recap' : 'reply',
+      );
 
     outboundMessageId = id('msg');
     await db
       .prepare(
         `INSERT INTO prospect_messages
            (id, prospect_id, creator_id, direction, subject, body, routed_offer_id,
-            prompt_tokens, completion_tokens, cost_usd_micros, created_at)
-         VALUES (?, ?, ?, 'outbound', ?, ?, ?, ?, ?, ?, ?)`,
+            prompt_tokens, completion_tokens, cost_usd_micros, created_at, kind)
+         VALUES (?, ?, ?, 'outbound', ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         outboundMessageId,
@@ -237,6 +254,7 @@ export async function runLeadgenPipeline(params: RunPipelineParams): Promise<Pip
         generated.usage.completionTokens,
         Math.round(generated.usage.costUsd * 1e6),
         now(),
+        params.channel === 'post_call' ? 'followup' : 'reply',
       );
   }
 

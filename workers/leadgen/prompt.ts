@@ -331,11 +331,34 @@ export function buildReplyInstructions(params: {
   offers: OfferForReply[];
   prospect: ProspectContext;
   terminology: string[];
+  /**
+   * 'email' (default) — a normal reply to something they wrote. 'post_call'
+   * — this is voice escalation's follow-up, written after a live
+   * qualification call rather than in reply to an email. The "message"
+   * below is an internal recap of that call, not their own words — see
+   * the framing this adds and generateReply()'s own user-message wording,
+   * which changes to match.
+   */
+  channel?: 'email' | 'post_call';
 }): string {
   const { creator, knowledge, offers, prospect } = params;
   const always = list(creator.always_do_json);
   const never = list(creator.never_do_json);
   const s: string[] = [];
+
+  if (params.channel === 'post_call') {
+    s.push(
+      [
+        `You are writing a follow-up email on behalf of ${creator.business_name}, right after a real phone`,
+        'conversation with this person — not a reply to something they emailed. The block below marked',
+        '"internal recap" is your own notes from that call, not their words — never treat it as a message',
+        'from them or quote it back as if they wrote it. Write as someone picking the conversation back up',
+        'after hanging up: reference what you actually discussed on the call in your own words, and if a',
+        'next step was already agreed to, confirm it plainly. If the call ended without landing on anything,',
+        'keep being useful based on what you learned rather than starting over as if this were a cold email.',
+      ].join('\n'),
+    );
+  }
 
   s.push(
     `You are answering an email on behalf of ${creator.business_name}. You write as them — the reply ` +

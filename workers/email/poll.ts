@@ -190,15 +190,21 @@ async function pollOneConnection(
         references: inbound.references,
       });
       const sent = await sendMessage(accessToken, raw, inbound.threadId);
-      // Thread-link the just-sent message to Gmail's own ids so a later
-      // follow-up (voice escalation's post-call recap, or a next-step
-      // confirmation) can reply into this same thread instead of starting a
-      // disconnected new one — there's no inbound message to key off of for
-      // those, unlike an ordinary reply.
-      if (result.outboundMessageId) {
+      // Thread-link the just-sent message so a later follow-up (voice
+      // escalation's post-call recap, or a next-step confirmation) can
+      // reply into this same thread instead of starting a disconnected new
+      // one — there's no inbound message to key off of for those, unlike an
+      // ordinary reply. Only worth the extra fetch for a hook email: Gmail
+      // requires the real RFC 2822 Message-Id (not the API's own message
+      // id) in In-Reply-To/References for a reply to actually thread, and
+      // getMessage() is the only place that header gets parsed out — doing
+      // this on every ordinary reply too would be a real-money API call
+      // this product never uses again.
+      if (result.outboundMessageId && result.signals.message_type === 'hook_sent') {
+        const sentDetail = await getMessage(accessToken, sent.id);
         await db
           .prepare('UPDATE prospect_messages SET gmail_message_id = ?, gmail_thread_id = ? WHERE id = ?')
-          .run(sent.id, sent.threadId, result.outboundMessageId);
+          .run(sentDetail.messageId, sent.threadId, result.outboundMessageId);
       }
       summary.messagesProcessed++;
     } catch (err) {

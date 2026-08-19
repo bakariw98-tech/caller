@@ -685,6 +685,12 @@ ALTER TABLE calls ADD COLUMN objection_raised INTEGER NOT NULL DEFAULT 0;
 -- live); false runs the fuller written-followup path through the existing
 -- runLeadgenPipeline().
 ALTER TABLE calls ADD COLUMN next_step_accepted INTEGER NOT NULL DEFAULT 0;
+-- Which offer the call actually converged on, once accepted -- lets
+-- CallSessionDO.finish() send the SAME offer's link in the "here's the
+-- link" follow-up rather than re-deciding after the call ends, when the
+-- live model's judgment (grounded in recommend_when/dont_recommend_when)
+-- is no longer available to consult.
+ALTER TABLE calls ADD COLUMN accepted_offer_id TEXT REFERENCES offers(id);
 
 -- Per-offer sales truth, creator-authored -- what actually gets said about
 -- an offer on a qualification call traces back to what the creator wrote
@@ -723,12 +729,17 @@ CREATE TABLE IF NOT EXISTS mcp_qual_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_qual_sessions_call ON mcp_qual_sessions(call_id);
 
--- 'reply' (default, every existing row) | 'hook' | 'followup' -- lets the
--- dashboard eventually distinguish call-flow messages from ordinary email
--- replies. gmail_message_id/gmail_thread_id capture what Gmail's send API
--- returns for an OUTBOUND message -- today only inbound ids are stored
--- (source_message_id) -- needed so the follow-up email threads into the
--- hook email's conversation instead of starting a disconnected new one.
+-- OUTBOUND: 'reply' (default, every existing row) | 'hook' | 'followup'.
+-- INBOUND: 'reply' (a real message from the prospect) | 'call_recap' (this
+-- system's own internal recap of a qualification call, used as the prompt
+-- input for the post-call follow-up -- never a real message from them;
+-- tagged distinctly so a creator glancing at message history can never
+-- mistake it for one). Lets the dashboard distinguish call-flow messages
+-- from ordinary email traffic. gmail_message_id/gmail_thread_id capture
+-- what Gmail's send API returns for an OUTBOUND message -- today only
+-- inbound ids are stored (source_message_id) -- needed so the follow-up
+-- email threads into the hook email's conversation instead of starting a
+-- disconnected new one.
 ALTER TABLE prospect_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply';
 ALTER TABLE prospect_messages ADD COLUMN gmail_message_id TEXT;
 ALTER TABLE prospect_messages ADD COLUMN gmail_thread_id TEXT;

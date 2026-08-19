@@ -3,6 +3,7 @@ import type { Env } from '../env.js';
 import { wrapD1 } from '../db/d1-adapter.js';
 import { resolveToken } from '../mcp/auth.js';
 import { callTool, TOOL_DEFINITIONS, type ToolContext } from '../mcp/tools.js';
+import { callQualTool, QUAL_TOOL_DEFINITIONS, type QualToolContext } from '../mcp/qual-tools.js';
 import { id, now } from '../../src/util/ids.js';
 
 export const mcpRoute = new Hono<{ Bindings: Env }>();
@@ -90,44 +91,53 @@ async function handleRpc(env: Env, authHeader: string | undefined, rpc: JsonRpcR
       return result(rpc.id, {});
 
     case 'tools/list': {
-      const session = await resolveToken(db, env.MCP_TOKEN_SECRET, authHeader);
-      if (!session) return error(rpc.id, -32001, 'Unauthorized');
+      const resolved = await resolveToken(db, env.MCP_TOKEN_SECRET, authHeader);
+      if (!resolved) return error(rpc.id, -32001, 'Unauthorized');
+      const defs = resolved.kind === 'coach' ? TOOL_DEFINITIONS : QUAL_TOOL_DEFINITIONS;
       return result(rpc.id, {
-        tools: TOOL_DEFINITIONS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
+        tools: defs.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
       });
     }
 
     case 'tools/call': {
-      const session = await resolveToken(db, env.MCP_TOKEN_SECRET, authHeader);
-      if (!session) return error(rpc.id, -32001, 'Unauthorized');
+      const resolved = await resolveToken(db, env.MCP_TOKEN_SECRET, authHeader);
+      if (!resolved) return error(rpc.id, -32001, 'Unauthorized');
 
       const name = String(rpc.params?.name ?? '');
       const args = (rpc.params?.arguments as Record<string, unknown> | undefined) ?? {};
 
-      const ctx: ToolContext = {
-        db,
-        session,
-        transferCall: async (targetE164: string) => {
-          const stub = env.CALL_SESSION.get(env.CALL_SESSION.idFromName(session.call_id));
-          const res = await stub.fetch('https://call-session/transfer', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ targetE164 }),
-          });
-          if (!res.ok) throw new Error(`transfer failed: ${await res.text()}`);
-        },
-        logEvent: async (type, payload, stepId) => {
-          await db
-            .prepare(
-              `INSERT INTO call_events (id, call_id, creator_id, type, step_id, payload_json, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            )
-            .run(id('ev'), session.call_id, session.creator_id, type, stepId ?? null, JSON.stringify(payload), now());
-        },
-      };
-
       try {
-        const out = await callTool(ctx, name, args);
+        let out: { data: unknown; isError?: boolean };
+
+        if (resolved.kind === 'coach') {
+          const session = resolved.session;
+          const ctx: ToolContext = {
+            db,
+            session,
+            transferCall: async (targetE164: string) => {
+              const stub = env.CALL_SESSION.get(env.CALL_SESSION.idFromName(session.call_id));
+              const res = await stub.fetch('https://call-session/transfer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ targetE164 }),
+              });
+              if (!res.ok) throw new Error(`transfer failed: ${await res.text()}`);
+            },
+            logEvent: async (type, payload, stepId) => {
+              await db
+                .prepare(
+                  `INSERT INTO call_events (id, call_id, creator_id, type, step_id, payload_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                )
+                .run(id('ev'), session.call_id, session.creator_id, type, stepId ?? null, JSON.stringify(payload), now());
+            },
+          };
+          out = await callTool(ctx, name, args);
+        } else {
+          const ctx: QualToolContext = { db, session: resolved.session };
+          out = await callQualTool(ctx, name, args);
+        }
+
         return result(rpc.id, { content: [{ type: 'text', text: JSON.stringify(out.data) }], isError: out.isError ?? false });
       } catch (err) {
         console.error('MCP tool failed', name, err);

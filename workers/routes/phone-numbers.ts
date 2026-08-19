@@ -105,19 +105,22 @@ phoneNumberRoute.post('/api/creators/:id/phone-number/manual', async (c) => {
     phone_number_id?: string;
     sip_host?: string;
     webhook_id?: string;
+    /** 'coach' (default, no behavior change for existing callers) | 'qualify'. */
+    purpose?: string;
   };
 
   if (!body.e164?.trim() || !body.signing_secret?.trim()) {
     return c.json({ error: 'e164 and signing_secret are required' }, 400);
   }
+  const purpose = body.purpose === 'qualify' ? 'qualify' : 'coach';
 
   const webhookUrl = `${c.env.PUBLIC_BASE_URL}/webhooks/xai`;
 
   await db
     .prepare(
       `INSERT INTO phone_numbers
-         (id, creator_id, xai_phone_number_id, e164, sip_host, webhook_id, origin, signing_secret, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'xai_provisioned', ?, ?)`,
+         (id, creator_id, xai_phone_number_id, e164, sip_host, webhook_id, origin, signing_secret, created_at, purpose)
+       VALUES (?, ?, ?, ?, ?, ?, 'xai_provisioned', ?, ?, ?)`,
     )
     .run(
       id('pn'),
@@ -128,6 +131,7 @@ phoneNumberRoute.post('/api/creators/:id/phone-number/manual', async (c) => {
       body.webhook_id ?? null,
       body.signing_secret.trim(),
       now(),
+      purpose,
     );
 
   return c.json(

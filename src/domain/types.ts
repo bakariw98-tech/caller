@@ -172,6 +172,8 @@ export interface PhoneNumber {
   webhook_id: string | null;
   origin: 'xai_provisioned' | 'byo_trunk';
   signing_secret: string;
+  /** 'coach' (default, every pre-existing row) routes to coaching; 'qualify' routes to a voice-escalation call. */
+  purpose: 'coach' | 'qualify';
   created_at: number;
 }
 
