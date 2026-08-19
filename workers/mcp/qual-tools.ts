@@ -3,7 +3,7 @@ import type { McpQualSession } from './auth.js';
 import type { ToolDefinition, ToolResult } from './tools.js';
 import { applyProspectSignals } from '../leadgen/prospects.js';
 import { loadFullOffers, type FullOfferRow } from '../leadgen/reply.js';
-import { ctaPhrase } from '../leadgen/call-prompt.js';
+import { ctaNextStep } from '../leadgen/call-prompt.js';
 
 /**
  * The three tools a qualification call gets — a disjoint set from
@@ -229,7 +229,12 @@ async function recordQualificationSignal(ctx: QualToolContext, args: Record<stri
         covers: offer.covers,
         who_for: offer.who_for,
         price_text: offer.price_text,
-        cta: ctaPhrase(offer.cta_tier),
+        // The FACT of what the next step is (checkout / application /
+        // follow-up call) — never a sentence to recite. See
+        // call-prompt.ts's own doc comment on ctaNextStep for why: an
+        // earlier version handed the model a full canned line here and it
+        // read like a script on a real call.
+        next_step: ctaNextStep(offer.cta_tier),
       },
     },
   };

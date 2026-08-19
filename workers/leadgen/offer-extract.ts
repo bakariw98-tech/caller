@@ -47,27 +47,55 @@ const extractionSchema = {
       type: 'boolean',
       description: "True only if the material below actually discusses this named offer — not a vague topic match, the offer itself.",
     },
-    who_for: { type: 'string', description: 'Who they said this is for, in their own words. Omit if not stated.' },
-    covers: { type: 'string', description: 'What it actually includes/covers, per the material. Omit if not stated.' },
+    who_for: {
+      type: 'string',
+      description:
+        "Who this is genuinely for, the way the creator has actually sold it — synthesized across everything below, not a single " +
+        'quote. If they never said "this is for X" as one sentence but every mention makes clear who they are talking to (the ' +
+        'problem being solved, the level of experience assumed, the language used), write THAT — the understanding a person who ' +
+        'watched all of this would form. Omit only if the material genuinely gives no basis to say who this is for.',
+    },
+    covers: {
+      type: 'string',
+      description:
+        'What it actually does/includes, pulled together from everything said about it across the material — a coherent picture, ' +
+        'not a list of disconnected fragments from different passages stapled together. Omit if not covered at all.',
+    },
     price_text: {
       type: 'string',
       description:
         'A literal dollar amount or price range, exactly as stated — e.g. "$390 one-time" or "$49/month" — and nothing ' +
-        'else. If the material only mentions a plan or tier name with no number attached (e.g. "you need the Pro ' +
-        'account"), that is NOT a price — omit this field entirely rather than writing the plan name here. Never ' +
-        'estimate or infer a number that is not literally present.',
+        'else. This one field stays strictly literal: if the material only mentions a plan or tier name with no number ' +
+        'attached (e.g. "you need the Pro account"), that is NOT a price — omit this field entirely rather than writing ' +
+        'the plan name here. Never estimate or infer a number that is not literally present anywhere.',
     },
-    not_who_for: { type: 'string', description: "Who they said this is NOT for, or who should not buy it. Omit if not stated." },
+    not_who_for: {
+      type: 'string',
+      description:
+        "Who this is clearly NOT for — synthesized the same way as who_for. If the material implies a prerequisite (\"you'll " +
+        'need to already have X for this to work") or a stage this assumes past, that counts even without an explicit ' +
+        '"this is not for beginners" statement. Omit if the material gives no real basis for this either way.',
+    },
     objections_and_responses: {
       type: 'string',
-      description: 'Any objection or doubt about this offer that the material addresses, and how they answered it — in their own words. Omit if none appear.',
+      description:
+        'Real doubts or hesitations the creator addressed about this offer, and how they actually answered them — in their own ' +
+        'reasoning, drawn together across however many times it came up. Omit if none appear anywhere.',
     },
-    recommend_when: { type: 'string', description: 'Any situation they described as the right moment/fit for this. Omit if not stated.' },
-    dont_recommend_when: { type: 'string', description: 'Any situation they described as the WRONG fit or too early for this. Omit if not stated.' },
+    recommend_when: {
+      type: 'string',
+      description:
+        'The situation that makes this the right call, per the pattern of how the creator actually talks about it — synthesized, ' +
+        'not requiring one explicit sentence. Omit if the material gives no real basis for this.',
+    },
+    dont_recommend_when: {
+      type: 'string',
+      description: 'The situation that makes this the WRONG fit or too early, by the same synthesis. Omit if no real basis.',
+    },
     source_indices: {
       type: 'array',
       items: { type: 'integer' },
-      description: 'The bracketed [n] numbers of the passages below that actually supported what you extracted. Empty if found is false.',
+      description: 'Every bracketed [n] passage below that contributed to what you wrote, across all of them — not just one. Empty if found is false.',
     },
   },
   required: ['found', 'source_indices'],
@@ -76,13 +104,20 @@ const extractionSchema = {
 
 function buildExtractionInstructions(creator: Creator, offerName: string): string {
   return [
-    `You are reading through ${creator.business_name}'s own material — videos, transcripts, notes — looking for`,
-    `everything it actually says about one specific offer: "${offerName}".`,
+    `You are ${creator.business_name} themselves, reading back through everything you have ever said about one`,
+    `specific offer: "${offerName}" — every video, every passage below where you brought it up. Someone who watched`,
+    'all of this would come away with a real understanding of who it is for, what it does, and when you would',
+    'actually recommend it, even though you never said any one of those things in a single tidy sentence. That is',
+    'the understanding you are reconstructing — not hunting for one quote that happens to answer each field.',
     '',
-    'You are EXTRACTIVE, never generative. Every field you fill in must trace directly to something actually said',
-    'in the passages below. Never invent a price, a feature, a claim, or a fit criterion that is not there. Never',
-    'generalize from how this creator talks about OTHER offers or topics — only what is said about this specific',
-    'one counts.',
+    'Pull the WHOLE picture together across every passage below that touches this offer, not just the first or',
+    'most obvious one. The same offer may come up in five different videos with five different angles — a real',
+    'understanding uses all five, not whichever one you read first.',
+    '',
+    'This is synthesis, not invention: everything you write must still trace back to something actually said or',
+    'unmistakably implied across the material — never a feature, a claim, or a fit criterion that isn\'t genuinely',
+    'there in some form. The line is "would someone who watched everything below reasonably conclude this", not',
+    '"did one sentence say this verbatim". price_text is the one exception that stays strictly literal — see below.',
     '',
     'A trivial variation in how the name is written — plural vs singular, spacing, capitalization, "the" added or',
     'dropped, a minor misspelling — is still the SAME offer if the material is unmistakably talking about that one',
@@ -95,10 +130,11 @@ function buildExtractionInstructions(creator: Creator, offerName: string): strin
     'AI states as fact to a real prospect on a live sales call.',
     '',
     'Only include price_text when an actual number or range is stated somewhere in the material. Do not write',
-    '"contact for pricing" or invent a plausible-sounding number — omit the field instead.',
+    '"contact for pricing" or invent a plausible-sounding number — omit the field instead. Every other field may be',
+    'synthesized across the whole picture; this one field may not.',
     '',
-    'source_indices must list the bracketed [n] numbers of passages that genuinely supported what you extracted —',
-    'this is how a human reviewer checks your work, so it must be accurate, not decorative.',
+    'source_indices must list every bracketed [n] passage that genuinely contributed — this is how a human reviewer',
+    'checks your work, so list all of them, not just one representative example.',
   ].join('\n');
 }
 
@@ -166,13 +202,18 @@ export async function extractOfferDetails(params: {
       console.error('offer-extraction query embedding failed, falling back to keyword retrieval', err);
     }
   }
-  // A wider net than the usual reply retrieval (6): an offer might be
-  // discussed across several different videos/passages, and missing one
-  // means an incomplete draft rather than a wrong one — the cheaper failure.
-  const hybrid = selectKnowledgeHybrid(all, params.offerName, queryVector, 15);
+  // Much wider than the usual reply retrieval (6): this runs once, when a
+  // creator adds an offer, not on every turn of a live conversation — the
+  // point is to reconstruct the FULL picture of how they have actually
+  // sold this thing across every video that touches it, not answer one
+  // question from the single best-matching passage. Missing a passage
+  // means an incomplete synthesis rather than a wrong one — the cheaper
+  // failure, and worth the extra tokens here specifically.
+  const hybrid = selectKnowledgeHybrid(all, params.offerName, queryVector, 25);
   // Literal name matches are force-included on top of hybrid ranking, not
-  // instead of it — see findLiteralNameMatches()'s own doc comment for why
-  // this second pass exists at all.
+  // instead of it, and — unlike hybrid — never capped: every passage that
+  // actually names the offer goes in. See findLiteralNameMatches()'s own
+  // doc comment for why this second pass exists at all.
   const literal = findLiteralNameMatches(all, params.offerName);
   const seen = new Set(hybrid.map((r) => r.id));
   const relevant = [...hybrid, ...literal.filter((r) => !seen.has(r.id))];

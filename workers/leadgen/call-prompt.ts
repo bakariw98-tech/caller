@@ -2,31 +2,31 @@ import type { Creator } from '../../src/domain/types.js';
 import type { FullOfferRow } from './reply.js';
 
 /**
- * Deterministic CTA phrasing, keyed by an offer's `cta_tier`. Never
- * something the model phrases freely per call — same discipline as never
- * trusting the model to write a link or a price: the ask that closes a
- * sale is exactly the sentence this product cannot afford to have
- * improvised badly on a live call, so it is decided in code and handed to
- * the model as a fact to say, not a judgment to make.
+ * WHAT the next step actually is, keyed by an offer's `cta_tier` — the one
+ * thing about the ask that stays deterministic, because it is a real
+ * business-logic fact the model has no business inventing: whether a
+ * $49 offer suddenly needs "a call with the team" or a $15,000 program
+ * gets treated like an instant checkout is not a stylistic choice, it is
+ * the actual sales process, decided by the creator, not guessed at live.
+ *
+ * This is deliberately NOT a sentence to recite — an earlier version of
+ * this file handed the model a full canned line per tier and mandated
+ * saying it "as given," and it read exactly like that on a real call:
+ * a salesperson reading a card instead of someone who understood the
+ * product. buildQualCallInstructions() hands the model this fact and
+ * tells it to phrase the actual ask itself, in the moment, the way a
+ * person who has internalized the product would.
  */
-const CTA_PHRASES: Record<string, string> = {
-  low_ticket:
-    "If that sounds right, the next step is easy — I'll text you the checkout link right after we hang up. " +
-    'No forms, just a quick yes or no on your end.',
-  course:
-    "If that sounds like a fit, I'll send over the program details and the enrollment link right after this call — " +
-    'you can look it over and decide from there.',
-  high_ticket_application:
-    'Given what you have told me, the right next step is a short application — I will send you that link. ' +
-    "It is not a commitment, it is just how they make sure it is genuinely the right fit before anyone's time is spent.",
-  very_high_ticket:
-    'This is exactly what that is built for. The real next step is a short call with someone on their team to walk ' +
-    "through fit properly before anything else — I'll get that set up and send you the details.",
+const CTA_NEXT_STEP: Record<string, string> = {
+  low_ticket: 'a direct checkout link — no application, no call, just a yes/no purchase decision',
+  course: 'the program details plus an enrollment link — something to look over and decide from',
+  high_ticket_application: 'a short application, not an instant checkout — the creator reviews fit before anyone commits',
+  very_high_ticket: "a follow-up call with the creator's own team, not a self-serve link — fit gets confirmed live before anything else",
 };
 
-/** Falls back to the 'course' phrasing for an unrecognised or missing tier — never silently says nothing. */
-export function ctaPhrase(tier: string | null | undefined): string {
-  return CTA_PHRASES[tier ?? ''] ?? CTA_PHRASES['course']!;
+/** Falls back to the 'course' next-step type for an unrecognised or missing tier — never silently says nothing. */
+export function ctaNextStep(tier: string | null | undefined): string {
+  return CTA_NEXT_STEP[tier ?? ''] ?? CTA_NEXT_STEP['course']!;
 }
 
 function list(json: string): string[] {
@@ -135,13 +135,23 @@ export function buildQualCallInstructions(params: {
       '`qualifies: false`. While it says false, keep discovering — do not name an offer, a price, or make',
       'any recommendation, however sure you feel. Once it says true and returns offer details (because you',
       'told it which offer you are considering, by name, and it fits), those returned details are the ONLY',
-      'facts you may state about that offer: its price, what it covers, who it is for. Never state a price',
+      'facts you may draw on for that offer: its price, what it covers, who it is for. Never state a price',
       'or a claim about an offer that did not come back in that response. If nothing was returned for the',
       'offer you named, you do not have grounds to discuss its specifics yet — say something honest and',
       'general instead, not a guess.',
       '',
-      'The CTA phrasing that response gives you is the exact sentence to use for the next step — use it as',
-      'given, do not write your own version of the ask.',
+      'Those returned facts are what you may say — not a script for how to say them. You already understood',
+      'this product before the call started, from everything laid out below; use these facts the way someone',
+      'who actually gets the product would, weaving them into what THIS person specifically needs to hear,',
+      'not reciting them in order like a spec sheet. Never read a list of features back at someone — pick the',
+      "one or two things that actually answer what they're worried about, and say those, in your own words,",
+      'like you would to a friend who asked you what this thing does.',
+      '',
+      'The response also tells you what kind of next step this offer actually has — a direct checkout, an',
+      'application, a follow-up call, whatever it genuinely is. That fact is fixed and real, but how you ASK',
+      'is yours: say it the way it naturally comes up in this specific conversation, not a memorized line.',
+      'Two different calls reaching the same offer should sound like two different conversations, not the',
+      'same paragraph replayed.',
     ].join('\n'),
   );
 
