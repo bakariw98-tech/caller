@@ -9,7 +9,7 @@ import { embedPassages, embedQuery, embeddingTextForItem, encodeVector, decodeVe
 import { loadOffers, loadFullOffers, loadKnowledge, keywordScores, SEMANTIC_FLOOR } from '../leadgen/reply.js';
 import { syncChannel } from '../youtube/ingest.js';
 import { startWebQualificationCall } from '../telephony/qualification-call.js';
-import { extractOfferDetails } from '../leadgen/offer-extract.js';
+import { extractOfferDetails, discoverOffers } from '../leadgen/offer-extract.js';
 import { getTranscript } from '../youtube/client.js';
 import { toCsv } from '../leadgen/csv.js';
 
@@ -98,6 +98,41 @@ leadgenRoute.post('/api/creators/:id/offers/extract', async (c) => {
   });
 
   return c.json({ draft, usage });
+});
+
+/**
+ * Scans the creator's whole knowledge base for offers they have talked
+ * about but not yet added — see discoverOffers()'s own doc comment for
+ * why this is a separate, lightweight pass from the per-name lookup
+ * above. Already-saved offers (matched the same trivial-variant-aware
+ * way as findLiteralNameMatches — plural/singular, spacing,
+ * capitalization) are filtered out here, not in discoverOffers() itself,
+ * since that function has no reason to know what is already saved.
+ */
+leadgenRoute.post('/api/creators/:id/offers/discover', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const creator = await db.prepare('SELECT * FROM creators WHERE id = ?').get<Creator>(creatorId);
+  if (!creator) return c.json({ error: 'creator not found' }, 404);
+
+  const existing = await db.prepare('SELECT name FROM offers WHERE creator_id = ?').all<{ name: string }>(creatorId);
+  const existingNames = new Set(
+    existing.flatMap((o) => {
+      const n = o.name.trim().toLowerCase();
+      return [n, n.endsWith('s') ? n.slice(0, -1) : `${n}s`];
+    }),
+  );
+
+  const { offers, usage } = await discoverOffers({
+    db,
+    apiBase: c.env.XAI_API_BASE,
+    apiKey: c.env.XAI_API_KEY,
+    model: c.env.XAI_TEXT_MODEL,
+    creator,
+  });
+
+  const newOffers = offers.filter((o) => !existingNames.has(o.name.trim().toLowerCase()));
+  return c.json({ offers: newOffers, usage });
 });
 
 /**

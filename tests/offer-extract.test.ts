@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findLiteralNameMatches } from '../workers/leadgen/offer-extract.js';
+import { filterDiscoveredOffers, findLiteralNameMatches } from '../workers/leadgen/offer-extract.js';
 import type { KnowledgeRow } from '../workers/leadgen/reply.js';
 
 function item(overrides: Partial<KnowledgeRow> & { id: string; problem: string; guidance: string }): KnowledgeRow {
@@ -50,5 +50,35 @@ describe('findLiteralNameMatches', () => {
 
   it('returns nothing for a blank name', () => {
     expect(findLiteralNameMatches(rows, '  ')).toEqual([]);
+  });
+});
+
+describe('filterDiscoveredOffers', () => {
+  // The exact live bug this exists to fix: the discovery model kept
+  // listing "Co-work" as this creator's own offer no matter how the
+  // prompt's exclusion instructions were worded — a non-reasoning model
+  // applies prose exclusion rules unreliably. This is the deterministic
+  // backstop, same discipline as every other honesty gate in this codebase.
+  it('drops known third-party platforms and AI assistants regardless of case', () => {
+    const out = filterDiscoveredOffers([
+      { name: 'Co-work', source_indices: [1, 2] },
+      { name: 'CLAUDE', source_indices: [3] },
+      { name: 'youtube', source_indices: [4] },
+      { name: 'Sandcastles', url: 'sandcastles.ai', source_indices: [1, 2, 3] },
+    ]);
+    expect(out).toEqual([{ name: 'Sandcastles', url: 'sandcastles.ai', mentions: 3 }]);
+  });
+
+  it('drops blank names', () => {
+    expect(filterDiscoveredOffers([{ name: '  ', source_indices: [1] }])).toEqual([]);
+  });
+
+  it('handles an undefined offers list', () => {
+    expect(filterDiscoveredOffers(undefined)).toEqual([]);
+  });
+
+  it('defaults url to null and mentions to the source_indices length', () => {
+    const out = filterDiscoveredOffers([{ name: 'Real Offer', source_indices: [1, 2, 3, 4] }]);
+    expect(out).toEqual([{ name: 'Real Offer', url: null, mentions: 4 }]);
   });
 });

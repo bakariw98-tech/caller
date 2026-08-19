@@ -150,7 +150,14 @@ export const PAGE = /* html */ `<!doctype html>
       genuinely help. <b>Paid</b> things are only recommended once it understands their situation, the real
       problem, and what they want.</p>
     <div id="offers"></div>
-    <details>
+    <div class="row" style="margin-top:.6rem">
+      <button id="btn-offer-discover" class="ghost" type="button">Find offers automatically</button>
+    </div>
+    <p class="note" style="margin-top:.3rem">Scans everything you've said across your knowledge base for things you
+      sell or promote as your own that aren't added yet — pricing is always left for you to fill in.</p>
+    <div class="status" id="st-offer-discover"></div>
+    <div id="offer-discover-results"></div>
+    <details id="offer-add-details">
       <summary style="cursor:pointer;font-size:.88rem;margin-top:.5rem">Add an offer</summary>
       <label>What is it?</label>
       <select id="o-free">
@@ -571,6 +578,7 @@ export const PAGE = /* html */ `<!doctype html>
         if (draft.who_for) el('o-who').value = draft.who_for;
         if (draft.covers) el('o-covers').value = draft.covers;
         if (draft.price_text) el('o-price').value = draft.price_text;
+        if (draft.url && !el('o-url').value.trim()) el('o-url').value = draft.url;
         if (draft.not_who_for) el('o-not-who').value = draft.not_who_for;
         if (draft.recommend_when) el('o-recommend-when').value = draft.recommend_when;
         if (draft.dont_recommend_when) el('o-dont-recommend-when').value = draft.dont_recommend_when;
@@ -604,6 +612,39 @@ export const PAGE = /* html */ `<!doctype html>
     lastLookedUpName = name;
     lookupOfferFromContent(name);
   });
+
+  el('btn-offer-discover').onclick = function () {
+    show('st-offer-discover', 'busy', 'Reading everything you’ve said… this can take a moment.');
+    el('offer-discover-results').innerHTML = '';
+    api('/api/creators/' + CID + '/offers/discover', { method: 'POST' })
+      .then(function (d) {
+        var found = d.offers || [];
+        if (!found.length) {
+          show('st-offer-discover', 'ok', 'Nothing new found — everything you sell that came up in your material is already added.');
+          return;
+        }
+        show('st-offer-discover', 'ok', 'Found ' + found.length + ' offer' + (found.length === 1 ? '' : 's') + ' not added yet:');
+        var box = el('offer-discover-results');
+        found.forEach(function (o) {
+          var n = document.createElement('div');
+          n.className = 'item';
+          n.innerHTML = '<h3>' + esc(o.name) + '</h3>' +
+            '<p class="note">Mentioned ' + o.mentions + ' time' + (o.mentions === 1 ? '' : 's') + (o.url ? ' — ' + esc(o.url) : '') + '</p>' +
+            '<div class="row" style="margin-top:.5rem"><button class="add-discovered" type="button">Add this offer</button></div>';
+          n.querySelector('.add-discovered').onclick = function () {
+            var details = el('offer-add-details');
+            details.open = true;
+            details.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            el('o-name').value = o.name;
+            if (o.url) el('o-url').value = o.url;
+            lastLookedUpName = o.name;
+            lookupOfferFromContent(o.name);
+          };
+          box.appendChild(n);
+        });
+      })
+      .catch(function (e) { show('st-offer-discover', 'err', e.message); });
+  };
 
   el('btn-offer').onclick = function () {
     var name = el('o-name').value.trim();
