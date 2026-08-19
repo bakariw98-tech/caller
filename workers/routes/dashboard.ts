@@ -160,12 +160,12 @@ export const PAGE = /* html */ `<!doctype html>
       <p class="note" style="margin:.35rem 0 0">Free things get sent whenever they'd genuinely help. Paid ones
         are only recommended once the coach understands their situation, their real problem, and what they want.</p>
       <label>Name</label><input id="o-name" placeholder="e.g. Kong AI, or 'How I find winning products'">
-      <div class="row" style="margin-top:.4rem">
-        <button id="btn-offer-lookup" class="ghost" type="button">Look up from my content</button>
-      </div>
-      <p class="note" style="margin-top:.3rem">Searches your knowledge base (pasted material + YouTube transcripts)
-        for what you've actually said about this name, and fills in what it finds below — nothing invented, and
-        you review everything before saving.</p>
+      <p class="note" style="margin-top:.3rem">The moment you type a name and click elsewhere, this searches your
+        knowledge base (pasted material + YouTube transcripts) for what you've actually said about it and fills in
+        what it finds below — nothing invented. Leave whatever it can't find (usually the price) for yourself, and
+        review everything before saving.
+        <button id="btn-offer-lookup" class="ghost" type="button" style="margin-left:.4rem;padding:.15rem .5rem;font-size:.8em">Look up again</button>
+      </p>
       <div class="status" id="st-offer-lookup"></div>
       <div id="offer-lookup-sources"></div>
       <label>Who it's for</label><input id="o-who" placeholder="who specifically benefits">
@@ -555,9 +555,10 @@ export const PAGE = /* html */ `<!doctype html>
     });
   }
 
-  el('btn-offer-lookup').onclick = function () {
-    var name = el('o-name').value.trim();
-    if (!name) return show('st-offer-lookup', 'err', 'Type the offer name first.');
+  var lastLookedUpName = null;
+
+  function lookupOfferFromContent(name) {
+    if (!name) return;
     show('st-offer-lookup', 'busy', 'Reading your material…');
     el('offer-lookup-sources').innerHTML = '';
     api('/api/creators/' + CID + '/offers/extract', { method: 'POST', body: { name: name } })
@@ -574,7 +575,7 @@ export const PAGE = /* html */ `<!doctype html>
         if (draft.recommend_when) el('o-recommend-when').value = draft.recommend_when;
         if (draft.dont_recommend_when) el('o-dont-recommend-when').value = draft.dont_recommend_when;
         if (draft.objections_and_responses) el('o-objections').value = draft.objections_and_responses;
-        show('st-offer-lookup', 'ok', 'Filled in below from your own material — check it over before saving.');
+        show('st-offer-lookup', 'ok', 'Filled in below from your own material — check it over before saving. Price is worth double-checking either way.');
         if (draft.sources && draft.sources.length) {
           el('offer-lookup-sources').innerHTML = '<p class="note" style="margin-top:.4rem">From: ' +
             draft.sources.map(function (s) {
@@ -583,7 +584,26 @@ export const PAGE = /* html */ `<!doctype html>
         }
       })
       .catch(function (e) { show('st-offer-lookup', 'err', e.message); });
+  }
+
+  el('btn-offer-lookup').onclick = function () {
+    var name = el('o-name').value.trim();
+    if (!name) return show('st-offer-lookup', 'err', 'Type the offer name first.');
+    lastLookedUpName = name;
+    lookupOfferFromContent(name);
   };
+
+  // Also fires on its own the moment you finish typing the name and click
+  // or tab elsewhere — you should not have to know a lookup button exists
+  // just to get the rest of the form filled in from your own material.
+  // Guarded against re-firing for a name that has not actually changed
+  // (tabbing through the form re-blurs this field without a real edit).
+  el('o-name').addEventListener('blur', function () {
+    var name = el('o-name').value.trim();
+    if (!name || name === lastLookedUpName) return;
+    lastLookedUpName = name;
+    lookupOfferFromContent(name);
+  });
 
   el('btn-offer').onclick = function () {
     var name = el('o-name').value.trim();
