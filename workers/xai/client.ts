@@ -50,21 +50,21 @@ export async function hangupCall(apiBase: string, apiKey: string, callId: string
 
 /**
  * Mints a short-lived client secret a browser can use to connect directly
- * to the realtime API over WebRTC, without ever seeing the real
- * XAI_API_KEY — the same pattern OpenAI's Realtime API uses for browser
- * clients. Confirmed live on this account 2026-08-19 (`POST
+ * to the realtime API over a plain WebSocket, without ever seeing the
+ * real XAI_API_KEY. Confirmed live on this account 2026-08-19 (`POST
  * /v1/realtime/client_secrets` → 200, a real `xai-realtime-client-secret-…`
  * value) — worth recording since this account has several other
  * capabilities disabled at the team level (`/v1/agents`,
  * `/v1/realtime/calls`, both 403 — see docs/XAI-API-NOTES.md), so this was
  * a genuine unknown, not an assumption.
  *
- * What is still UNVERIFIED: the actual SDP exchange this secret is used
- * for (see workers/routes/talk.ts, which POSTs the browser's SDP offer to
- * `{apiBase}/v1/realtime?model=...` mirroring the SIP path's own base URL
- * and OpenAI's Realtime API's WebRTC convention). That guess has not yet
- * been exercised against a live browser — confirm on the first real test,
- * same as every other item in docs/XAI-API-NOTES.md's ambiguities table.
+ * The connection this secret is used FOR (see workers/routes/talk.ts) was
+ * first guessed as WebRTC/SDP, mirroring OpenAI's Realtime API — wrong,
+ * confirmed by a live 405 ("Request method must be GET"). The real shape,
+ * per docs.x.ai: a plain `wss://` WebSocket, with the secret passed as a
+ * connection subprotocol (`xai-client-secret.{value}`) since browsers
+ * cannot set WebSocket headers at all, and audio carried as base64 PCM16
+ * JSON events over that same socket rather than a native WebRTC track.
  */
 export async function mintEphemeralClientSecret(apiBase: string, apiKey: string): Promise<{ value: string; expiresAt: number }> {
   const result = await request<{ value: string; expires_at: number }>(apiBase, apiKey, '/v1/realtime/client_secrets', {
