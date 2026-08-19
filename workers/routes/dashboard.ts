@@ -160,6 +160,14 @@ export const PAGE = /* html */ `<!doctype html>
       <p class="note" style="margin:.35rem 0 0">Free things get sent whenever they'd genuinely help. Paid ones
         are only recommended once the coach understands their situation, their real problem, and what they want.</p>
       <label>Name</label><input id="o-name" placeholder="e.g. Kong AI, or 'How I find winning products'">
+      <div class="row" style="margin-top:.4rem">
+        <button id="btn-offer-lookup" class="ghost" type="button">Look up from my content</button>
+      </div>
+      <p class="note" style="margin-top:.3rem">Searches your knowledge base (pasted material + YouTube transcripts)
+        for what you've actually said about this name, and fills in what it finds below — nothing invented, and
+        you review everything before saving.</p>
+      <div class="status" id="st-offer-lookup"></div>
+      <div id="offer-lookup-sources"></div>
       <label>Who it's for</label><input id="o-who" placeholder="who specifically benefits">
       <label>What it covers</label><textarea id="o-covers" style="min-height:4rem" placeholder="be precise — it will never claim more than this"></textarea>
       <label>Price</label><input id="o-price" placeholder="e.g. $390 one-time">
@@ -546,6 +554,36 @@ export const PAGE = /* html */ `<!doctype html>
       });
     });
   }
+
+  el('btn-offer-lookup').onclick = function () {
+    var name = el('o-name').value.trim();
+    if (!name) return show('st-offer-lookup', 'err', 'Type the offer name first.');
+    show('st-offer-lookup', 'busy', 'Reading your material…');
+    el('offer-lookup-sources').innerHTML = '';
+    api('/api/creators/' + CID + '/offers/extract', { method: 'POST', body: { name: name } })
+      .then(function (d) {
+        var draft = d.draft;
+        if (!draft || !draft.found) {
+          show('st-offer-lookup', 'err', "Couldn't find this discussed by name in your material — fill it in below yourself.");
+          return;
+        }
+        if (draft.who_for) el('o-who').value = draft.who_for;
+        if (draft.covers) el('o-covers').value = draft.covers;
+        if (draft.price_text) el('o-price').value = draft.price_text;
+        if (draft.not_who_for) el('o-not-who').value = draft.not_who_for;
+        if (draft.recommend_when) el('o-recommend-when').value = draft.recommend_when;
+        if (draft.dont_recommend_when) el('o-dont-recommend-when').value = draft.dont_recommend_when;
+        if (draft.objections_and_responses) el('o-objections').value = draft.objections_and_responses;
+        show('st-offer-lookup', 'ok', 'Filled in below from your own material — check it over before saving.');
+        if (draft.sources && draft.sources.length) {
+          el('offer-lookup-sources').innerHTML = '<p class="note" style="margin-top:.4rem">From: ' +
+            draft.sources.map(function (s) {
+              return s.url ? '<a href="' + esc(s.url) + '" target="_blank" rel="noopener">' + esc(s.title) + '</a>' : esc(s.title);
+            }).join(', ') + '</p>';
+        }
+      })
+      .catch(function (e) { show('st-offer-lookup', 'err', e.message); });
+  };
 
   el('btn-offer').onclick = function () {
     var name = el('o-name').value.trim();

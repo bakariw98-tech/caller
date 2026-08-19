@@ -9,6 +9,7 @@ import { embedPassages, embedQuery, embeddingTextForItem, encodeVector, decodeVe
 import { loadOffers, loadFullOffers, loadKnowledge, keywordScores, SEMANTIC_FLOOR } from '../leadgen/reply.js';
 import { syncChannel } from '../youtube/ingest.js';
 import { startWebQualificationCall } from '../telephony/qualification-call.js';
+import { extractOfferDetails } from '../leadgen/offer-extract.js';
 import { toCsv } from '../leadgen/csv.js';
 
 export const leadgenRoute = new Hono<{ Bindings: Env }>();
@@ -66,6 +67,36 @@ leadgenRoute.post('/api/creators/:id/offers', async (c) => {
 leadgenRoute.get('/api/creators/:id/offers', async (c) => {
   const db = wrapD1(c.env.DB);
   return c.json({ offers: await loadFullOffers(db, c.req.param('id')) });
+});
+
+/**
+ * Pulls a draft offer record from the creator's own ingested material
+ * (pasted knowledge + YouTube transcripts) by name — see
+ * workers/leadgen/offer-extract.ts's own doc comment for why this returns
+ * a draft rather than writing to `offers` directly. The creator reviews
+ * and edits before the normal POST/PATCH offer routes ever get called.
+ */
+leadgenRoute.post('/api/creators/:id/offers/extract', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const creator = await db.prepare('SELECT * FROM creators WHERE id = ?').get<Creator>(creatorId);
+  if (!creator) return c.json({ error: 'creator not found' }, 404);
+
+  const b = (await c.req.json().catch(() => ({}))) as { name?: string };
+  const offerName = String(b.name ?? '').trim();
+  if (!offerName) return c.json({ error: 'name is required' }, 400);
+
+  const { draft, usage } = await extractOfferDetails({
+    db,
+    ai: c.env.AI,
+    apiBase: c.env.XAI_API_BASE,
+    apiKey: c.env.XAI_API_KEY,
+    model: c.env.XAI_TEXT_MODEL,
+    creator,
+    offerName,
+  });
+
+  return c.json({ draft, usage });
 });
 
 /**
