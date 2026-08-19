@@ -30,23 +30,31 @@ export const talkRoute = new Hono<{ Bindings: Env }>();
  * A browser cannot set WebSocket headers at all, so the ephemeral secret
  * goes in the connection's subprotocol list, prefixed `xai-client-secret.`.
  * Audio is base64 PCM16 (24kHz, little-endian) carried as
- * `input_audio_buffer.append` (send) / `response.output_audio.delta`
- * (receive) JSON events over the same socket — there is no SIP leg here
- * for xAI to terminate itself, so unlike the phone path, audio DOES cross
+ * `input_audio_buffer.append` (send, payload in `audio`) /
+ * `response.output_audio.delta` (receive, payload in `delta` — NOT `audio`,
+ * confirmed by driving the real handshake directly from Node and logging
+ * every field on a live event, after this file's own first guess at the
+ * field name silently produced zero-length audio for several fixes in a
+ * row) JSON events over the same socket — there is no SIP leg here for
+ * xAI to terminate itself, so unlike the phone path, audio DOES cross
  * this channel.
  */
-talkRoute.get('/talk/:callId', async (c) => {
-  const db = wrapD1(c.env.DB);
-  const callId = c.req.param('callId');
-  const token = c.req.query('token');
-
-  const resolved = await resolveToken(db, c.env.MCP_TOKEN_SECRET, token ? `Bearer ${token}` : undefined);
+async function buildTalkSession(
+  db: ReturnType<typeof wrapD1>,
+  env: Env,
+  callId: string,
+  token: string,
+): Promise<
+  | { ok: true; businessName: string; realtimeBase: string; model: string; ephemeralSecret: string; sessionUpdate: Record<string, unknown>; seedItem: Record<string, unknown>; responseCreate: Record<string, unknown> }
+  | { ok: false; status: 401 | 404 | 502; message: string }
+> {
+  const resolved = await resolveToken(db, env.MCP_TOKEN_SECRET, token ? `Bearer ${token}` : undefined);
   if (!resolved || resolved.kind !== 'qualify' || resolved.session.call_id !== callId) {
-    return c.text('This link is invalid or has expired.', 401);
+    return { ok: false, status: 401, message: 'This link is invalid or has expired.' };
   }
 
   const creator = await db.prepare('SELECT * FROM creators WHERE id = ?').get<Creator>(resolved.session.creator_id);
-  if (!creator) return c.text('Creator not found.', 404);
+  if (!creator) return { ok: false, status: 404, message: 'Creator not found.' };
 
   const posture = await db
     .prepare('SELECT objection_handling_posture FROM creators WHERE id = ?')
@@ -59,20 +67,20 @@ talkRoute.get('/talk/:callId', async (c) => {
   // for a while would just hand back an expired secret.
   let secret: { value: string; expiresAt: number };
   try {
-    secret = await mintEphemeralClientSecret(c.env.XAI_API_BASE, c.env.XAI_API_KEY);
+    secret = await mintEphemeralClientSecret(env.XAI_API_BASE, env.XAI_API_KEY);
   } catch (err) {
     console.error('failed to mint ephemeral client secret', err);
-    return c.text('Could not start a live session with the voice API right now. Try again in a moment.', 502);
+    return { ok: false, status: 502, message: 'Could not start a live session with the voice API right now. Try again in a moment.' };
   }
 
-  const mcpUrl = `${c.env.PUBLIC_BASE_URL}/mcp`;
+  const mcpUrl = `${env.PUBLIC_BASE_URL}/mcp`;
   const sessionUpdate = buildSessionUpdate({
     instructions,
     voice: creator.coach_voice,
-    mcpToken: token!,
+    mcpToken: token,
     mcpUrl,
     reasoningEffort: 'none',
-    idleTimeoutMs: loadAppConfig(c.env).idleTimeoutMs,
+    idleTimeoutMs: loadAppConfig(env).idleTimeoutMs,
     toolSet: QUAL_TOOL_SET,
   }) as { session: Record<string, unknown> } & Record<string, unknown>;
   // Explicit rather than relying on the documented default (24kHz PCM) —
@@ -84,21 +92,49 @@ talkRoute.get('/talk/:callId', async (c) => {
   const seedItem = buildSeedItem("You're on a qualification call. Greet them warmly and ask for the short code from their invite email.");
   const responseCreate = buildResponseCreate();
 
-  return c.html(renderTalkPage({
-    callId,
-    token: token!,
+  return {
+    ok: true,
+    businessName: creator.business_name,
     // Same host as the SIP path's own outbound connection (XAI_REALTIME_HOST
     // is the bare host, kept separate from XAI_API_BASE for exactly this
     // reuse) — but wss://, a real client-side WebSocket, not the server-side
     // fetch()-with-Upgrade-header trick call-session.ts uses.
-    realtimeBase: `wss://${c.env.XAI_REALTIME_HOST}/v1/realtime`,
-    model: c.env.XAI_VOICE_MODEL,
+    realtimeBase: `wss://${env.XAI_REALTIME_HOST}/v1/realtime`,
+    model: env.XAI_VOICE_MODEL,
     ephemeralSecret: secret.value,
     sessionUpdate,
     seedItem,
     responseCreate,
-    businessName: creator.business_name,
-  }));
+  };
+}
+
+talkRoute.get('/talk/:callId', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const callId = c.req.param('callId');
+  const token = c.req.query('token') ?? '';
+
+  const session = await buildTalkSession(db, c.env, callId, token);
+  if (!session.ok) return c.text(session.message, session.status);
+
+  return c.html(renderTalkPage({ callId, token, ...session }));
+});
+
+/**
+ * DIAGNOSTIC — not part of the product surface. Returns the exact same
+ * session artifacts the HTML page embeds, as JSON, so the actual WebSocket
+ * handshake with xAI can be driven directly from a plain script (this
+ * sandbox cannot launch a networked headless browser to click through the
+ * real page — see the investigation this was added during). Same auth as
+ * the page itself: the call's own token, nothing more sensitive exposed.
+ */
+talkRoute.get('/talk/:callId/raw', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const callId = c.req.param('callId');
+  const token = c.req.query('token') ?? '';
+
+  const session = await buildTalkSession(db, c.env, callId, token);
+  if (!session.ok) return c.json({ error: session.message }, session.status);
+  return c.json(session);
 });
 
 talkRoute.post('/talk/:callId/end', async (c) => {
@@ -120,7 +156,13 @@ talkRoute.post('/talk/:callId/end', async (c) => {
   return c.json({ ok: true });
 });
 
-function renderTalkPage(params: {
+// Exported for tests/talk.test.ts, which parses the embedded <script> with
+// new Function() to catch a JS syntax error before it reaches a browser —
+// see workers/routes/dashboard.ts's own PAGE export and its test for why
+// this matters here specifically: a backtick inside a JS comment nested
+// inside this outer TS template literal broke this exact file once
+// already this session, the same trap that broke the dashboard earlier.
+export function renderTalkPage(params: {
   callId: string;
   token: string;
   realtimeBase: string;
@@ -263,7 +305,14 @@ This uses your microphone.</p>
       var msg;
       try { msg = JSON.parse(evt.data); } catch (e) { return; }
       if (msg.type === 'response.output_audio.delta' || msg.type === 'response.audio.delta') {
-        if (msg.audio) playChunk(msg.audio);
+        // The base64 PCM payload lives under 'delta' — confirmed by driving
+        // this exact handshake directly from Node against the real API,
+        // logging every field name on a live audio-delta event. There is
+        // no 'audio' field on this event at all; that was this file's own
+        // wrong guess from an ambiguous docs summary, not a config or
+        // routing problem — every earlier fix in this file was real, this
+        // was simply reading the wrong key the entire time.
+        if (msg.delta) playChunk(msg.delta);
       } else if (msg.type === 'error') {
         setStatus('Error: ' + (msg.error && msg.error.message ? msg.error.message : JSON.stringify(msg.error)));
       }
