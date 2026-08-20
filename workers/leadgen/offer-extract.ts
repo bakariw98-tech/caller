@@ -63,7 +63,10 @@ const extractionSchema = {
         "Who this is genuinely for, the way the creator has actually sold it — synthesized across everything below, not a single " +
         'quote. If they never said "this is for X" as one sentence but every mention makes clear who they are talking to (the ' +
         'problem being solved, the level of experience assumed, the language used), write THAT — the understanding a person who ' +
-        'watched all of this would form. Omit only if the material genuinely gives no basis to say who this is for.',
+        'watched all of this would form. This gets read later as evidence of the creator\'s pattern, not as a checkbox a ' +
+        'prospect must literally match — so if the material shows real texture (mostly true, but they still recommended it to ' +
+        'someone outside the usual profile once the actual problem lined up), let that texture show instead of flattening it ' +
+        'into one clean label. Omit only if the material genuinely gives no basis to say who this is for.',
     },
     covers: {
       type: 'string',
@@ -84,7 +87,10 @@ const extractionSchema = {
       description:
         "Who this is clearly NOT for — synthesized the same way as who_for. If the material implies a prerequisite (\"you'll " +
         'need to already have X for this to work") or a stage this assumes past, that counts even without an explicit ' +
-        '"this is not for beginners" statement. Omit if the material gives no real basis for this either way.',
+        '"this is not for beginners" statement. Like who_for, this becomes reasoning evidence about the creator\'s judgment, not ' +
+        'a hard exclusion rule — if the material itself shows exceptions or edge cases (usually not for X, except when their ' +
+        'actual blocker is Y), capture that nuance rather than reducing it to a single flat exclusion. Omit if the material ' +
+        'gives no real basis for this either way.',
     },
     objections_and_responses: {
       type: 'string',
@@ -96,11 +102,15 @@ const extractionSchema = {
       type: 'string',
       description:
         'The situation that makes this the right call, per the pattern of how the creator actually talks about it — synthesized, ' +
-        'not requiring one explicit sentence. Omit if the material gives no real basis for this.',
+        'not requiring one explicit sentence. This describes a pattern to reason from later, not a trigger condition to check ' +
+        'mechanically — if the creator\'s own reasoning has nuance (this, unless the deeper issue is actually Z), write the ' +
+        'nuance rather than a bare trigger. Omit if the material gives no real basis for this.',
     },
     dont_recommend_when: {
       type: 'string',
-      description: 'The situation that makes this the WRONG fit or too early, by the same synthesis. Omit if no real basis.',
+      description:
+        'The situation that makes this the WRONG fit or too early, by the same synthesis — again evidence of judgment to reason ' +
+        'from, not a rule to apply literally. Omit if no real basis.',
     },
     source_indices: {
       type: 'array',

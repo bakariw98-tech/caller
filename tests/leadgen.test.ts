@@ -7,7 +7,40 @@ import {
   normalizeVideoReference,
   type KnowledgeRow,
 } from '../workers/leadgen/reply.js';
-import { buildDiscoveryState, looksLikeOptOut, isQualified, type ProspectContext } from '../workers/leadgen/prompt.js';
+import {
+  buildDiscoveryState,
+  looksLikeOptOut,
+  isQualified,
+  buildReplyInstructions,
+  type ProspectContext,
+} from '../workers/leadgen/prompt.js';
+import type { Creator } from '../src/domain/types.js';
+
+function makeCreator(overrides: Partial<Creator> = {}): Creator {
+  return {
+    id: 'creator_1',
+    slug: 'test',
+    business_name: 'Test Co',
+    coach_name: 'Rosa',
+    coach_voice: 'eve',
+    brand_json: '{}',
+    welcome_message: null,
+    outcome: null,
+    audience: null,
+    methodology: null,
+    teaching_style: null,
+    always_do_json: '[]',
+    never_do_json: '[]',
+    ask_questions_when: null,
+    escalation_policy: 'offer_human',
+    escalation_phone: null,
+    price_per_minute_cents: 75,
+    status: 'live',
+    created_at: 0,
+    updated_at: 0,
+    ...overrides,
+  };
+}
 
 function item(overrides: Partial<KnowledgeRow> & { id: string; problem: string }): KnowledgeRow {
   return {
@@ -273,6 +306,65 @@ function ctx(over: Partial<ProspectContext> = {}): ProspectContext {
     ...over,
   };
 }
+
+/**
+ * The bug this guards against: an earlier version told the model to route
+ * to an offer only when the prospect's words "specifically and concretely"
+ * matched who_for, and to "never stretch" it — literal-match phrasing that
+ * gets a real prospect (further along than a label, but with the exact
+ * problem the offer solves) wrongly excluded. This locks in that the
+ * instructions frame who_for as evidence of the creator's pattern to
+ * reason from, not a string to match against, while the legitimate
+ * one-shot-email caution against guessing stays intact.
+ */
+describe('buildReplyInstructions — REASON TWO framing', () => {
+  const offers = [
+    {
+      id: 'offer_1',
+      name: 'Dropship Launch',
+      who_for: 'people just starting out with no store yet',
+      covers: 'picking a product, setting up a store, first ads',
+      price_text: '$499 one-time',
+      link: 'https://example.com/offer',
+      isFree: false,
+    },
+  ];
+
+  it('does not instruct literal-match discipline against who_for', () => {
+    const out = buildReplyInstructions({
+      creator: makeCreator(),
+      knowledge: [],
+      offers,
+      prospect: ctx(),
+      terminology: [],
+    });
+    expect(out).not.toMatch(/specifically and concretely/);
+    expect(out).not.toMatch(/never stretch/);
+  });
+
+  it('frames who_for as evidence of the creator\'s pattern, not an eligibility label', () => {
+    const out = buildReplyInstructions({
+      creator: makeCreator(),
+      knowledge: [],
+      offers,
+      prospect: ctx(),
+      terminology: [],
+    });
+    expect(out).toMatch(/evidence of how the/);
+    expect(out).toMatch(/not an eligibility label/);
+  });
+
+  it('still keeps the one-shot-email caution against guessing', () => {
+    const out = buildReplyInstructions({
+      creator: makeCreator(),
+      knowledge: [],
+      offers,
+      prospect: ctx(),
+      terminology: [],
+    });
+    expect(out.toLowerCase()).toContain('one shot');
+  });
+});
 
 describe('buildDiscoveryState — the progression', () => {
   it('starts at QUESTION when nothing is known', () => {

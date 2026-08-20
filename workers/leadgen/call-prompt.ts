@@ -29,6 +29,42 @@ export function ctaNextStep(tier: string | null | undefined): string {
   return CTA_NEXT_STEP[tier ?? ''] ?? CTA_NEXT_STEP['course']!;
 }
 
+/**
+ * Presents an offer's fit signals as evidence of the creator's pattern,
+ * not as eligibility rules — the actual fix for a real failure mode: an
+ * earlier version of this prompt labeled these fields "Right for:" /
+ * "NOT right for:" / "Recommend when:" / "Do NOT recommend when:", and a
+ * model reading rule-shaped labels reasons like it's checking rules —
+ * "prospect doesn't match the label → offer doesn't apply" — instead of
+ * actually thinking about whether the diagnosed problem is what this
+ * offer solves. Nothing here is mechanically enforced either way (the
+ * real gates are record_qualification_signal's discovery-completeness
+ * check and findOfferByName's honesty check, both in qual-tools.ts) —
+ * this function only changes what the words THEMSELVES invite the model
+ * to do with them.
+ *
+ * Never invents a connection between fields that weren't already there —
+ * each present field gets its own sentence under one shared header, sourced
+ * exactly as extracted, nothing stitched together that wasn't grounded.
+ */
+export function describeOfferForFit(offer: FullOfferRow): string {
+  const lines = [`- "${offer.name}"`];
+  if (offer.covers) lines.push(`    Covers: ${offer.covers}`);
+  if (offer.price_text) lines.push(`    Price: ${offer.price_text}`);
+
+  const pattern: string[] = [];
+  if (offer.who_for) pattern.push(`generally sold this to ${offer.who_for}`);
+  if (offer.not_who_for) pattern.push(`has been clear it usually isn't the right fit for ${offer.not_who_for}`);
+  if (offer.recommend_when) pattern.push(`tends to bring it up when ${offer.recommend_when}`);
+  if (offer.dont_recommend_when) pattern.push(`tends to hold back on it when ${offer.dont_recommend_when}`);
+  if (pattern.length) {
+    lines.push(`    How this has actually come up before (their pattern, not a checklist): ${pattern.join('; ')}.`);
+  }
+
+  if (offer.objections_and_responses) lines.push(`    Known objections and how to answer them: ${offer.objections_and_responses}`);
+  return lines.join('\n');
+}
+
 function list(json: string): string[] {
   try {
     const parsed = JSON.parse(json);
@@ -194,21 +230,31 @@ export function buildQualCallInstructions(params: {
       [
         `${creator.business_name}'S OFFERS — facts only. Nothing here is for you to embellish.`,
         '',
-        ...offers.map((o) => {
-          const lines = [`- "${o.name}"`];
-          if (o.who_for) lines.push(`    Right for: ${o.who_for}`);
-          if (o.not_who_for) lines.push(`    NOT right for: ${o.not_who_for}`);
-          if (o.covers) lines.push(`    Covers: ${o.covers}`);
-          if (o.price_text) lines.push(`    Price: ${o.price_text}`);
-          if (o.recommend_when) lines.push(`    Recommend when: ${o.recommend_when}`);
-          if (o.dont_recommend_when) lines.push(`    Do NOT recommend when: ${o.dont_recommend_when}`);
-          if (o.objections_and_responses) lines.push(`    Known objections and how to answer them: ${o.objections_and_responses}`);
-          return lines.join('\n');
-        }),
+        ...offers.map(describeOfferForFit),
         '',
         'These details are for your own understanding of what fits whom. You may only STATE specifics —',
         'price, what it covers — once record_qualification_signal has actually confirmed you have earned',
         'the right to, for that specific offer, as described above.',
+      ].join('\n'),
+    );
+
+    s.push(
+      [
+        'HOW TO REASON ABOUT FIT — read this as carefully as anything above.',
+        '',
+        'The pattern lines above describe how this creator has talked about each offer before — they are',
+        'evidence of the creator\'s judgment, not eligibility rules to check a prospect against. A real',
+        'salesperson does not hear "beginner" or "advanced" and look it up in a table. They ask: where is',
+        'this person actually at, what have they tried, what is actually stopping them, and does this offer',
+        'genuinely solve that. That is the reasoning you are doing too.',
+        '',
+        'Concretely: if someone says "I have been doing this six months, gotten a few sales, but I cannot',
+        'consistently get customers," do not think "not a beginner, so the beginner offer does not apply."',
+        'Think about what is actually broken for them — here, customer acquisition specifically — and',
+        'whether the diagnosed bottleneck is what this offer was built to solve. Someone technically inside a',
+        'stated pattern can still be a bad fit if their real problem is not what the offer addresses; someone',
+        'outside it can still be exactly right if their diagnosed problem matches. The diagnosis you confirmed',
+        'with them earlier in this call is what fit is actually judged against — never a label.',
       ].join('\n'),
     );
   } else {
