@@ -146,14 +146,6 @@ export const PAGE = /* html */ `<!doctype html>
       <div class="row" style="margin-top:.7rem"><button id="btn-yt-connect">Connect channel</button></div>
     </div>
     <div class="status" id="st-yt"></div>
-    <div id="yt-conflicts"></div>
-  </section>
-
-  <section>
-    <h2>Knowledge</h2>
-    <p class="note">What the coach can actually answer from. A <b>boundary</b> is the only thing that makes it mention a paid
-      offer — items without one get answered in full and never pitch. Edit or delete anything that's wrong.</p>
-    <div id="knowledge"></div>
   </section>
 
   <section>
@@ -294,6 +286,26 @@ export const PAGE = /* html */ `<!doctype html>
     <div class="row" style="margin-top:.7rem"><button id="btn-pw">Change password</button></div>
     <div class="status" id="st-pw"></div>
   </section>
+
+  <details id="advanced-details" style="margin-bottom:1rem">
+    <summary style="cursor:pointer;font-weight:700;font-size:1.02rem;padding:.3rem 0">Advanced — the raw knowledge base</summary>
+    <p class="note" style="margin:.5rem 0 .9rem">This is the coach's actual memory, item by item — every extracted
+      question-and-answer pair, and any videos that disagreed closely enough to need your call. Most days you'll
+      never open this; it's here for when a reply sounds off and you want to see or fix exactly where that came from.</p>
+    <section>
+      <h2>Knowledge</h2>
+      <p class="note">A <b>boundary</b> is the only thing that makes it mention a paid offer — items without one get
+        answered in full and never pitch. Edit or delete anything that's wrong.</p>
+      <div id="knowledge"></div>
+    </section>
+    <section>
+      <h2>Sync conflicts</h2>
+      <p class="note">Places where two videos said close to the same thing, close enough that agreement wasn't
+        confirmed automatically. Nothing was merged or guessed at — this could be a real difference in advice, or
+        just different wording for the same point. Only you know which.</p>
+      <div id="yt-conflicts"></div>
+    </section>
+  </details>
 </div>
 
 <script>
