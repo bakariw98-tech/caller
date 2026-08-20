@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { Env } from '../env.js';
 import { wrapD1 } from '../db/d1-adapter.js';
 import { id, now, hmacHex } from '../../src/util/ids.js';
+import { buildActivitySummary } from '../leadgen/activity.js';
 import type { Creator } from '../../src/domain/types.js';
 import { extractFreeContent, NoUsableContentError, type FreeContentSource } from '../leadgen/extract.js';
 import { runLeadgenPipeline, CreatorNotFoundError } from '../leadgen/pipeline.js';
@@ -548,6 +549,7 @@ leadgenRoute.get('/api/creators/:id/overview', async (c) => {
     .get<{ e164: string }>(creatorId);
 
   const since30d = now() - 30 * 86400;
+  const prev30dStart = now() - 60 * 86400;
   // Rolling 30 days, matching leads_last_30d above. Every count here is
   // PEOPLE or CALLS, never a rate presented as if it were a fact on its
   // own — see the dashboard's own framing rule: lead with "voluntarily
@@ -598,6 +600,8 @@ leadgenRoute.get('/api/creators/:id/overview', async (c) => {
   const costPerVoiceQualifiedLead =
     voice && voice.qualified_conversations > 0 ? Math.round(voice.cost_cents_estimate / voice.qualified_conversations) : null;
 
+  const activity = await buildActivitySummary(db, creatorId, since30d, prev30dStart, now());
+
   return c.json({
     creator,
     email: conn ?? null,
@@ -609,6 +613,7 @@ leadgenRoute.get('/api/creators/:id/overview', async (c) => {
       funnel: voice ?? null,
       cost_per_voice_qualified_lead_cents: costPerVoiceQualifiedLead,
     },
+    activity,
   });
 });
 
