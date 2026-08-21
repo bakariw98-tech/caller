@@ -112,7 +112,15 @@ async function handleRpc(env: Env, authHeader: string | undefined, rpc: JsonRpcR
       if (!resolved) return error(rpc.id, -32001, 'Unauthorized');
       const defs = toolDefinitionsForKind(resolved.kind);
       return result(rpc.id, {
-        tools: defs.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
+        // annotations only included when a tool actually sets them — an
+        // absent key is the MCP-spec-correct way to say "no hint", not an
+        // empty object every client has to special-case.
+        tools: defs.map((t) => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+          ...(t.annotations ? { annotations: t.annotations } : {}),
+        })),
       });
     }
 

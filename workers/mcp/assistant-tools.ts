@@ -36,6 +36,7 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
       'is on. Call this before answering any "how are things going" or "is X set up" question rather than ' +
       'recalling what you were told earlier in the conversation; it may have changed.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true },
   },
   {
     name: 'search_knowledge',
@@ -51,6 +52,7 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['query'],
       additionalProperties: false,
     },
+    annotations: { readOnlyHint: true },
   },
   {
     name: 'list_offers',
@@ -58,6 +60,7 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
       'Everything the creator currently sells or gives away, with the ids needed to edit or remove one, and ' +
       'every sales-truth field a qualification call would speak from.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true },
   },
   {
     name: 'list_prospects',
@@ -74,6 +77,7 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
       },
       additionalProperties: false,
     },
+    annotations: { readOnlyHint: true },
   },
   {
     name: 'get_prospect_transcript',
@@ -95,6 +99,7 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['prospect_id'],
       additionalProperties: false,
     },
+    annotations: { readOnlyHint: true },
   },
   {
     name: 'get_recent_transcripts',
@@ -114,6 +119,7 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
       },
       additionalProperties: false,
     },
+    annotations: { readOnlyHint: true },
   },
   {
     name: 'edit_knowledge_item',
@@ -141,6 +147,7 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['id'],
       additionalProperties: false,
     },
+    annotations: { readOnlyHint: false, idempotentHint: true },
   },
   {
     name: 'delete_knowledge_item',
@@ -154,6 +161,7 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['id'],
       additionalProperties: false,
     },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
   },
   {
     name: 'lookup_offer_from_content',
@@ -171,6 +179,7 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['name'],
       additionalProperties: false,
     },
+    annotations: { readOnlyHint: true, openWorldHint: true },
   },
   {
     name: 'add_offer',
@@ -196,6 +205,7 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['name'],
       additionalProperties: false,
     },
+    annotations: { readOnlyHint: false },
   },
   {
     name: 'edit_offer',
@@ -218,6 +228,7 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['id'],
       additionalProperties: false,
     },
+    annotations: { readOnlyHint: false, idempotentHint: true },
   },
   {
     name: 'remove_offer',
@@ -230,6 +241,7 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['id'],
       additionalProperties: false,
     },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
   },
   {
     name: 'update_profile',
@@ -244,6 +256,7 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
       },
       additionalProperties: false,
     },
+    annotations: { readOnlyHint: false, idempotentHint: true },
   },
   {
     name: 'set_voice_escalation',
@@ -259,6 +272,7 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
       },
       additionalProperties: false,
     },
+    annotations: { readOnlyHint: false, idempotentHint: true },
   },
   {
     name: 'email_prospect',
@@ -280,6 +294,7 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['prospect_id', 'subject', 'body'],
       additionalProperties: false,
     },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   },
   {
     name: 'connect_youtube',
@@ -292,6 +307,7 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['channel'],
       additionalProperties: false,
     },
+    annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
   },
 ];
 

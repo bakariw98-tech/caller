@@ -99,4 +99,35 @@ describe('ASSISTANT_TOOL_DEFINITIONS', () => {
     const def = ASSISTANT_TOOL_DEFINITIONS.find((d) => d.name === 'get_recent_transcripts');
     expect(def!.description.toLowerCase()).toMatch(/call_recap/);
   });
+
+  // MCP spec 2025-06-18 tool annotations — the only structured signal a
+  // connecting client's own safety layer has to decide whether a call is
+  // safe to run without extra scrutiny, beyond free-text description
+  // parsing. Every tool here should set one; a read-only tool that reads
+  // the creator's own real email content (the transcript tools especially)
+  // is exactly the case where an absent hint is most likely to make a
+  // client's classifier default to caution.
+  it('every tool declares readOnlyHint', () => {
+    for (const def of ASSISTANT_TOOL_DEFINITIONS) {
+      expect(def.annotations?.readOnlyHint, `${def.name} should set readOnlyHint`).not.toBeUndefined();
+    }
+  });
+
+  it('the read-only lookup/list/get tools are actually marked readOnlyHint: true', () => {
+    const readOnly = [
+      'get_overview', 'search_knowledge', 'list_offers', 'list_prospects',
+      'get_prospect_transcript', 'get_recent_transcripts', 'lookup_offer_from_content',
+    ];
+    for (const name of readOnly) {
+      const def = ASSISTANT_TOOL_DEFINITIONS.find((d) => d.name === name);
+      expect(def!.annotations!.readOnlyHint, `${name} should be readOnlyHint: true`).toBe(true);
+    }
+  });
+
+  it('every irreversible tool also sets destructiveHint: true', () => {
+    for (const name of ['delete_knowledge_item', 'remove_offer', 'email_prospect']) {
+      const def = ASSISTANT_TOOL_DEFINITIONS.find((d) => d.name === name);
+      expect(def!.annotations!.destructiveHint, `${name} should be destructiveHint: true`).toBe(true);
+    }
+  });
 });

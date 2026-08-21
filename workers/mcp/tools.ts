@@ -18,10 +18,28 @@ import { balanceSeconds } from '../billing/wallet.js';
 import { meterActivity } from '../billing/sessions.js';
 import type { McpSession } from './auth.js';
 
+/**
+ * The standard MCP tool annotation hints (spec 2025-06-18, the same
+ * PROTOCOL_VERSION this server declares in mcp.ts) — optional, but a
+ * client-side safety layer deciding whether to auto-run or gate a call has
+ * nothing to go on without them beyond the free-text description. Every
+ * tool below should set readOnlyHint at minimum; destructiveHint on
+ * anything genuinely irreversible (delete/remove/send); openWorldHint on
+ * anything that reaches an external system (a real email send, a page
+ * fetch, a third-party API) rather than staying inside this app's own data.
+ */
+export interface ToolAnnotations {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
 export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  annotations?: ToolAnnotations;
 }
 
 /** Same tool surface and descriptions as src/mcp/tools.ts — see that file for the rationale. */
