@@ -1,147 +1,89 @@
 # Deploying to Cloudflare Workers
 
-This is the deploy path for the `workers/` build — a port of the Node app onto
-Workers, D1, and Durable Objects. See
-[docs/CLOUDFLARE-PORT-NOTES.md](./CLOUDFLARE-PORT-NOTES.md) for why this build
-exists alongside the Node one and what differs between them.
+The deploy path for `workers/` — the live product. See
+[CLOUDFLARE-PORT-NOTES.md](./CLOUDFLARE-PORT-NOTES.md) for why this runtime
+exists and what it's built on.
 
 ## What's already live
 
-Deployed at **`https://caller-coach.bakariw98.workers.dev`**. Concretely:
+Deployed at **`https://caller-coach.bakariw98.workers.dev`**:
 
 - D1 database created and schema applied: `caller-coach`
   (`36a74a8c-1399-4c55-8a1b-cb07b1f1d9a5`).
-- A demo creator is seeded in that live database: Open Crumb Baking ("Rosa"),
-  a full 3-module sourdough course (6 steps, 11 documented problems), a
-  $30-minute-block trial pool, and one verified customer (Dana Whitfield,
-  30 minutes of paid credit, mid-course with an unresolved problem from a
-  prior call, passcode `730511`).
-- A real number is live and registered: **+14095097508**, attached to an
-  xAI-console-managed Voice Agent (`agent_Rhxnni4ij3qefb4v`) — this account
-  cannot provision numbers via API, see below.
-- `wrangler deploy` has run, all four secrets are set (`XAI_API_KEY` is a real
-  key), and `PUBLIC_BASE_URL` points at the real deployed URL.
-- Smoke-tested against Miniflare *and* against this real deployment — webhook
-  signature verification, curriculum ingestion, the full MCP tool surface
-  against real seeded data, and the Durable Object's outbound connection to
-  the real xAI API, which authenticated correctly (see
-  CLOUDFLARE-PORT-NOTES.md).
-
-## The one blocker: number provisioning is console-only
-
-`POST /v2/phone-numbers` — the documented way to provision a number — returns
-`403 Provisioning SpaceXAI phone numbers via the API is not supported. Use the
-console (Voice Agents) instead.` on this account. Confirmed against production
-with the real key, not a docs read. See docs/XAI-API-NOTES.md.
-
-**So: provision the number by hand, then register it with this app.**
-
-### 1. Provision in the xAI console
-
-Go to the xAI console → **Voice Agents** → phone numbers, and create a number
-for Open Crumb Baking (or whichever creator). Set its webhook URL to:
-
-```
-https://caller-coach.bakariw98.workers.dev/webhooks/xai
-```
-
-The console will show a **webhook signing secret exactly once**, at creation.
-Copy it immediately — there is no way to retrieve it again afterward, xAI
-included.
-
-### 2. Register it with this app
+- `wrangler deploy` has run, all secrets are set (`XAI_API_KEY`,
+  `ADMIN_TOKEN`, `SESSION_SECRET`, `MCP_TOKEN_SECRET`,
+  `GOOGLE_OAUTH_CLIENT_ID`/`_SECRET`, `TRANSCRIPT_API_KEY`), and
+  `PUBLIC_BASE_URL` points at the real deployed URL.
+- At least one real creator is live, with a real login, a connected Gmail
+  inbox, real leads, and a real offer catalog.
 
 ```bash
-curl -X POST "https://caller-coach.bakariw98.workers.dev/api/creators/creator_b77490adf793450c8a4690b0/phone-number/manual" \
-  -H "Authorization: Bearer <ADMIN_TOKEN — see below>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "e164": "+1XXXXXXXXXX",
-    "signing_secret": "<the secret from step 1>",
-    "phone_number_id": "<optional, xAI'"'"'s id for it>"
-  }'
+cd workers
+npx wrangler deploy   # needs CLOUDFLARE_API_TOKEN in the environment
 ```
 
-Your `ADMIN_TOKEN` was generated during setup and given to you separately —
-it is not repeated in this file since it's a live credential. Rotate it
-anytime with `wrangler secret put ADMIN_TOKEN` if needed.
+## Creator login and the dashboard
 
-### 3. Call it
+A creator's own control panel is `https://caller-coach.bakariw98.workers.dev/dashboard/:creatorId`,
+behind real per-creator login (`workers/auth/session.ts`,
+`workers/auth/password.ts`) — no key in the URL. To get a new or existing
+creator logged in:
 
-**+14095097508.** Say your name, then say or type **730511** on the keypad
-when asked — that's Dana Whitfield's passcode in the seed data. The coach
-should greet her by name and know she's on the float test with an unresolved
-"sinks every time" problem from a prior call.
+1. Set (or reset) their login from `/onboard` (see "Onboarding a new
+   creator" below) — it takes an email and password and calls
+   `PATCH /api/creators/:id/login`.
+2. Or set it directly: `hashPassword()` in `workers/auth/password.ts` is a
+   pure function (`pbkdf2:<iterations>:<saltHex>:<hashHex>`) — run it
+   locally with `node`, then `UPDATE creators SET password_hash = ?,
+   login_email = ? WHERE id = ?` against the live D1 database. This is the
+   "creator locked out, reset their password" runbook — the hash is
+   one-way, so a forgotten password can only be reset, never recovered.
 
-A wrong or missing passcode gets a plain "I can't find that" — no account
-information leaks either way. See docs/BILLING.md for why identity here is
-passcode-based rather than caller-ID-based at all.
+Once logged in, the dashboard is sidebar nav (a hamburger drawer under
+~880px): **Overview** (real audience-activity numbers — who wrote in, a
+funnel with period-over-period deltas, a 30-day trend, what people are
+actually asking about), **Leads** (every prospect, including the exact
+email transcript per person, verbatim), **Offers**, **Content** (paste
+material or connect YouTube; the raw knowledge-item list lives behind an
+"Advanced" toggle, not the main view), **Voice escalation**, **Connect
+agent**, and **Settings**.
 
-## Onboarding — as web pages, not curl
+`ADMIN_TOKEN` still works as an operator override on top of a creator's
+own login (support access), and still gates every `/onboard` and
+platform-level route — it is not, itself, how a creator gets into their
+own dashboard any more.
 
-Both flows are real pages now, not scripts.
+### Onboarding a new creator
 
-**Customers:** `https://caller-coach.bakariw98.workers.dev/c/<creator-slug>` —
-name and phone, no SMS round trip. A passcode is generated and shown once,
-right on the confirmation page (also visible on later visits to `/account`).
-Signing up twice with the same phone returns the existing account rather than
-creating a second one.
+`https://caller-coach.bakariw98.workers.dev/onboard` — enter the admin
+token, then business info, then set the new creator's login (email +
+password). From there they run everything themselves.
 
-**Creators:** `https://caller-coach.bakariw98.workers.dev/onboard` — enter the
-admin token once, then business info, then **add raw material in whatever form
-you already have it** (course outline, how-to guide, the questions customers
-keep asking, roadblocks, a video transcript — as many blocks as you like, each
-labelled). The system structures it into a curriculum draft you review and
-edit before uploading, then attach a phone number (manual — see above),
-optional trial pool, publish, and copy the generated agent setup into the xAI
-console.
+## Connect your own agent (MCP)
 
-Structuring is deliberately **extractive, never generative**: if your material
-doesn't state a step's expected result, it is left blank and flagged rather
-than invented, because an invented one would be spoken to your customers as
-your own method. Blanks are the to-do list, and the structure audit blocks
-publishing until the important ones are filled. Each step also carries the
-verbatim quote it came from, viewable under "Where did each part come from?".
-Costs a few cents per course, one time.
+From the dashboard's **Connect agent** panel, "Create a key" mints a
+long-lived MCP key and shows the connector URL exactly once — treat it
+like a password; it can read and change everything in that creator's
+account, including sending real email as them, for as long as it exists.
+Paste it into Claude Desktop (or any MCP-capable agent) as a custom
+connector; nothing else to configure. Revoke a key any time from the same
+panel.
 
-The page is a plain client for the same JSON API below; nothing it does is
-unreachable by script, so both remain available. `POST
-/api/creators/:id/curriculum/structure` takes `{sources:[{kind,title,text}]}`
-and returns a draft plus its audit and provenance without saving anything:
-
-```bash
-TOKEN="<your ADMIN_TOKEN>"
-BASE="https://caller-coach.bakariw98.workers.dev"
-
-curl -X POST "$BASE/api/creators" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{
-  "business_name": "...", "coach_name": "...", "price_per_minute_cents": 75
-}'
-curl -X POST "$BASE/api/creators/<id>/curriculum" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d "$(python3 -c 'import json;print(json.dumps({"markdown": open("curriculum.md").read()}))')"
-curl -X POST "$BASE/api/creators/<id>/phone-number/manual" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"e164": "+1...", "signing_secret": "<from the console, shown once — or any placeholder on console-managed numbers, see docs/BILLING.md>"}'
-curl -X POST "$BASE/api/creators/<id>/publish" -H "Authorization: Bearer $TOKEN"
-```
-
-The admin token gates all of the above equally, on both the page and the raw
-API — it is a platform-wide secret (matches this being a single-creator
-deployment so far), not a per-creator login. True multi-creator self-serve
-(each creator with their own account, unable to touch another's data) is a
-separate, bigger feature this does not build.
+The tool surface behind it is `workers/mcp/assistant-tools.ts` — the exact
+same tools the dashboard's built-in "Talk to your assistant" voice
+assistant uses. See [CLAUDE.md](../CLAUDE.md) for the honesty-gate
+discipline every tool there holds to.
 
 ## Email transport for the lead engine — Gmail, no domain
 
-The lead engine (offers, free-content ingestion, `/api/leadgen/simulate`) is
-built and tested. This is the last-mile piece: actually receiving a
-prospect's email and sending the reply, without owning a domain.
-`workers.dev` genuinely cannot receive mail, so Cloudflare Email Service is
-out — but a single Gmail account works, connected over OAuth, with a Cron
-Trigger polling for what's new. See the plan history for the research behind
-this (verification tiers, refresh-token expiry, why polling over Pub/Sub).
+Receiving a prospect's email and sending the reply, without owning a
+domain. `workers.dev` genuinely cannot receive mail, so Cloudflare Email
+Service is out — a single Gmail account per creator works instead,
+connected over OAuth, with a Cron Trigger polling for what's new.
 
 **One real trade-off**: without a domain, replies come *from* a real
-`@gmail.com` address, not `hello@cutroomclub.com`. The display name can read
-"Marcus @ Cutroom Club"; the visible address is still gmail.com.
+`@gmail.com` address, not `hello@creatorsdomain.com`. The display name can
+read "Rosa @ Sandcastles"; the visible address is still gmail.com.
 
 ### 1. One Google Cloud project, shared by every creator
 
@@ -175,7 +117,8 @@ authorizes as many creators' Gmail accounts as connect to it.
 ### 2. Connect a creator's Gmail account
 
 Pick a dedicated Gmail address for the creator (its name is what prospects
-see — not a personal inbox). Then:
+see — not a personal inbox). Then, as that creator (logged in) or as the
+operator with `ADMIN_TOKEN`:
 
 ```bash
 curl -s "$BASE/api/creators/<id>/email/connect" -H "Authorization: Bearer $TOKEN"
@@ -248,12 +191,14 @@ call — the call itself is where discovery, diagnosis, and an
 honestly-earned offer all happen live, not a phone-flavored qualification
 gate ahead of an email that still does the real selling.
 
-**Setup, from the dashboard** (`/dashboard/:creatorId?key=...`):
+**Setup, from the dashboard's "Voice escalation" panel**
+(`/dashboard/:creatorId`, logged in):
 
-1. Provision a second number in the xAI console the same way as the coach
-   number (see "Provision in the xAI console" above), then register it
-   under the new "Voice escalation" section — same manual-registration flow
-   as a coach number, this one just carries `purpose: 'qualify'`.
+1. Provision a second number in the xAI console the same way as any other
+   number (xAI console → Voice Agents → phone numbers; webhook URL
+   `https://caller-coach.bakariw98.workers.dev/webhooks/xai`), then
+   register it in the panel — same manual-registration flow as any
+   number, this one just carries `purpose: 'qualify'`.
 2. A Gmail connection must already exist — the hook email needs somewhere
    to send from. Enabling the mode is refused server-side
    (`PATCH /api/creators/:id/voice-qualification`) until both the number
@@ -263,13 +208,11 @@ gate ahead of an email that still does the real selling.
    re-engagements first).
 4. Per-offer sales truth (who it's NOT for, known objections and how to
    answer them, when to recommend it / not, next-step style) is entered on
-   each offer in the existing "Offers" section — this is what the call
-   prompt is grounded in; nothing beyond it is ever said on a call.
+   each offer in the "Offers" panel — this is what the call prompt is
+   grounded in; nothing beyond it is ever said on a call.
 
-**Prompt-size measurement** (the plan for this feature flagged this as a
-real unknown, not something to assume scales the same way email's short
-offer list did — measured directly against `buildQualCallInstructions()`,
-not estimated):
+**Prompt-size measurement** (measured directly against
+`buildQualCallInstructions()`, not estimated):
 
 | offers loaded (full sales-truth playbook each) | prompt size |
 |---|---|
@@ -289,21 +232,17 @@ instructions; re-measure here if a creator's offer count grows well past
 that, since the linear-per-offer cost does eventually add up for someone
 running a large catalog.
 
-## What isn't ported yet
+## What's genuinely unfinished
 
-The call path — webhook, Durable Object, MCP tools, billing, structure audit,
-and now both onboarding flows — is complete. Not yet ported to Workers:
-
-- **The creator dashboard and curriculum-intelligence analytics.** The data is
-  all being recorded (`call_events`, `escalations`, the full ledger); the
-  read-side dashboard just isn't built for this runtime yet. Query D1 directly
-  in the meantime (`npx wrangler d1 execute caller-coach --remote --command "..."`).
-- **Per-creator accounts.** See above.
+See the README's "What's genuinely unfinished" for the current, accurate
+list — kept in one place rather than duplicated here to avoid the two
+drifting apart.
 
 ## Troubleshooting
 
-**Call connects but the coach can't look anything up.** `PUBLIC_BASE_URL` is
-probably wrong or not redeployed — xAI calls `/mcp` on it directly.
+**Call connects but the assistant/coach can't look anything up.**
+`PUBLIC_BASE_URL` is probably wrong or not redeployed — xAI calls `/mcp`
+on it directly.
 
 **Webhook returns 401.** Check the number's signing secret matches what's
 stored — re-run the `/phone-number/manual` registration if you're not sure
@@ -316,5 +255,113 @@ named DO class before, see
 [Durable Objects migrations](https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/).
 
 **Nothing happens when you call.** Check `npx wrangler tail` while placing the
-call — it streams live logs, including the DO's connection attempt to xAI,
-which is the fastest way to see exactly where it's failing.
+call — it streams live logs, including the Durable Object's connection
+attempt to xAI, which is the fastest way to see exactly where it's failing.
+
+---
+
+## Legacy: the original coaching-call product
+
+Everything below is about the *original* per-minute coaching product (the
+`'coach'`-purpose call path — see [CLAUDE.md](../CLAUDE.md)), still present
+in the codebase but not under active development. Kept for reference, not
+what a new creator or a new agent working on this repo should start from.
+
+### Number provisioning is console-only
+
+`POST /v2/phone-numbers` — the documented way to provision a number —
+returns `403 Provisioning SpaceXAI phone numbers via the API is not
+supported. Use the console (Voice Agents) instead.` on this account.
+Confirmed against production with the real key, not a docs read. See
+docs/XAI-API-NOTES.md. This applies to number provisioning generally
+(both call purposes go through the same console step); it's documented
+here because it was discovered while setting up the original product.
+
+**So: provision the number by hand, then register it with this app.**
+
+#### 1. Provision in the xAI console
+
+Go to the xAI console → **Voice Agents** → phone numbers, and create a
+number for the creator. Set its webhook URL to:
+
+```
+https://caller-coach.bakariw98.workers.dev/webhooks/xai
+```
+
+The console will show a **webhook signing secret exactly once**, at
+creation. Copy it immediately — there is no way to retrieve it again
+afterward, xAI included.
+
+#### 2. Register it with this app
+
+```bash
+curl -X POST "https://caller-coach.bakariw98.workers.dev/api/creators/<creator_id>/phone-number/manual" \
+  -H "Authorization: Bearer <ADMIN_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "e164": "+1XXXXXXXXXX",
+    "signing_secret": "<the secret from step 1>",
+    "phone_number_id": "<optional, xAI'"'"'s id for it>"
+  }'
+```
+
+### Original demo creator
+
+A demo creator was seeded for this original product early in the project:
+Open Crumb Baking ("Rosa"), a full 3-module sourdough course (6 steps, 11
+documented problems), a $30-minute-block trial pool, and one verified
+customer (Dana Whitfield, 30 minutes of paid credit, mid-course with an
+unresolved problem from a prior call, passcode `730511`), reachable at
+**+14095097508**. This is historical seed data for the original coaching
+product, not the current lead-gen product's live creator(s).
+
+A wrong or missing passcode gets a plain "I can't find that" — no account
+information leaks either way. See docs/BILLING.md for why identity here is
+passcode-based rather than caller-ID-based at all.
+
+### Curriculum onboarding — as web pages, not curl
+
+Both flows are real pages, not scripts.
+
+**Customers:** `https://caller-coach.bakariw98.workers.dev/c/<creator-slug>` —
+name and phone, no SMS round trip. A passcode is generated and shown once,
+right on the confirmation page (also visible on later visits to `/account`).
+Signing up twice with the same phone returns the existing account rather than
+creating a second one.
+
+**Creators (curriculum path):** the same `/onboard` page as the current
+product's login setup also handles curriculum-based onboarding for a
+`'coach'`-purpose creator — enter the admin token, then business info,
+then **add raw material in whatever form you already have it** (course
+outline, how-to guide, the questions customers keep asking, roadblocks, a
+video transcript — as many blocks as you like, each labelled). The system
+structures it into a curriculum draft you review and edit before
+uploading, then attach a phone number (manual — see above), optional
+trial pool, publish, and copy the generated agent setup into the xAI
+console.
+
+Structuring is deliberately **extractive, never generative**: if your
+material doesn't state a step's expected result, it is left blank and
+flagged rather than invented, because an invented one would be spoken to
+your customers as your own method. Blanks are the to-do list, and the
+structure audit blocks publishing until the important ones are filled.
+Each step also carries the verbatim quote it came from, viewable under
+"Where did each part come from?". Costs a few cents per course, one time.
+
+`POST /api/creators/:id/curriculum/structure` takes
+`{sources:[{kind,title,text}]}` and returns a draft plus its audit and
+provenance without saving anything:
+
+```bash
+TOKEN="<your ADMIN_TOKEN>"
+BASE="https://caller-coach.bakariw98.workers.dev"
+
+curl -X POST "$BASE/api/creators" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{
+  "business_name": "...", "coach_name": "...", "price_per_minute_cents": 75
+}'
+curl -X POST "$BASE/api/creators/<id>/curriculum" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "$(python3 -c 'import json;print(json.dumps({"markdown": open("curriculum.md").read()}))')"
+curl -X POST "$BASE/api/creators/<id>/phone-number/manual" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"e164": "+1...", "signing_secret": "<from the console, shown once — or any placeholder on console-managed numbers, see docs/BILLING.md>"}'
+curl -X POST "$BASE/api/creators/<id>/publish" -H "Authorization: Bearer $TOKEN"
+```

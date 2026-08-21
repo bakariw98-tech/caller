@@ -5,6 +5,13 @@ details are load-bearing and a few are genuinely ambiguous in the published
 docs. Anything marked **unverified** has not been exercised against a live call
 and should be confirmed on the first real one.
 
+Applies equally to both call purposes this product uses the same realtime
+Voice API for — the original coaching product's `'coach'`-purpose calls and
+the current lead-gen product's `'qualify'`-purpose voice-escalation calls
+(see [CLAUDE.md](../CLAUDE.md)). The mechanics below (webhook signing, the
+SIP `call_id` session shape, MCP tools arriving as inbound HTTP) are
+identical either way; only the prompt/tool set on the other end differs.
+
 ## Confirmed against the real API: number provisioning is console-only
 
 **`POST /v2/phone-numbers` returns `403` on this account**, despite being the

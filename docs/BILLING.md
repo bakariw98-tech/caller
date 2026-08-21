@@ -1,5 +1,17 @@
 # Billing: what can actually be metered, and what cannot
 
+> **Scope:** this document is about the *original* per-minute, retail-billed
+> coaching-call product — the `'coach'`-purpose phone path (see
+> [CLAUDE.md](../CLAUDE.md) for the two-products-in-one-Worker context). It
+> is present in the codebase and everything below is real, verified
+> research, but it is not under active development and does not describe
+> the current lead-gen product. That product has no comparable retail
+> billing model — creators aren't charged per-minute — and tracks only its
+> own platform cost, per email reply (`prospect_messages.cost_usd_micros`)
+> and per voice-escalation call (`calls.cost_cents_estimate`), with no
+> revenue-attribution signal anywhere (see the README's "What's genuinely
+> unfinished").
+
 Two integrations exist in this repo, and they have very different billing
 accuracy. This matters commercially, so the difference is written down rather
 than left to be rediscovered.

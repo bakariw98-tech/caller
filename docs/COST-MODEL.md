@@ -1,5 +1,19 @@
 # Cost model
 
+> **Scope:** this document is about the *original* per-minute, retail-billed
+> coaching-call product — the `'coach'`-purpose phone path (see
+> [CLAUDE.md](../CLAUDE.md) for the two-products-in-one-Worker context). The
+> current lead-gen product has no retail price floor or wallet to check
+> margin against; its own cost tracking is per email reply
+> (`prospect_messages.cost_usd_micros`) and per voice-escalation call
+> (`calls.cost_cents_estimate`), with no revenue-attribution signal to
+> compute margin from at all (see the README's "What's genuinely
+> unfinished"). The token-cost engineering decisions below (retrieval
+> through MCP rather than the prompt, one seeded text item, `response.create`
+> for steering, `reasoning.effort: none`) are still the right instincts and
+> partly still apply to the lead-gen product's own real-money xAI spend —
+> just without this doc's retail-floor framing.
+
 The target is **under $5/hour all-in** (~$0.083/min) against a retail floor of
 $0.50/min. The margin is wide enough that the risk is not pricing — it is
 discovering the cost side was never measured.

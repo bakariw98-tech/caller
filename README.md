@@ -126,10 +126,20 @@ cd workers && npx tsc --noEmit    # workers/ typecheck (its own tsconfig)
 
 ## Documentation
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/COST-MODEL.md](docs/COST-MODEL.md),
-  [docs/XAI-API-NOTES.md](docs/XAI-API-NOTES.md) — written for the `src/`
-  prototype; the underlying xAI API and cost-metering notes still apply to
-  `workers/`, the product framing in them does not.
-- [docs/DEPLOY.md](docs/DEPLOY.md) — the Cloudflare deploy path.
-- [docs/CLOUDFLARE-PORT-NOTES.md](docs/CLOUDFLARE-PORT-NOTES.md) — what
-  differs between the two runtimes and why `workers/` exists.
+- [CLAUDE.md](CLAUDE.md) — orientation for any agent working in this repo:
+  the real module map, the two-products-in-one-Worker reality, and the
+  patterns/traps worth knowing before touching code.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the three real request
+  flows (email pipeline, voice-escalation call, dashboard/MCP surface)
+  and the full module map.
+- [docs/DEPLOY.md](docs/DEPLOY.md) — the Cloudflare deploy path: login,
+  the dashboard, connecting a creator's own agent, Gmail, retrieval,
+  voice escalation.
+- [docs/CLOUDFLARE-PORT-NOTES.md](docs/CLOUDFLARE-PORT-NOTES.md) — why
+  this runtime is built on Hono/D1/Durable Objects.
+- [docs/XAI-API-NOTES.md](docs/XAI-API-NOTES.md) — verified realtime
+  Voice API behavior, applies to both call purposes.
+- [docs/BILLING.md](docs/BILLING.md), [docs/COST-MODEL.md](docs/COST-MODEL.md)
+  — the *original* coaching product's per-minute retail billing and margin
+  model; scoped to the dormant path, not the lead-gen product's own cost
+  tracking.

@@ -1,11 +1,19 @@
-# Notes on the Cloudflare Workers port
+# Notes on the Cloudflare Workers runtime
 
-`workers/` is a second runtime for the same product as `src/` (Node/Fastify/
-better-sqlite3). It exists because getting a real test call reachable from
-outside this sandbox needed a public HTTPS URL, and Cloudflare was the one
-platform available here with no auth friction — see the chat history for the
-fuller reasoning, but in short: no tunnel binary in this sandbox, Vercel
-needed authorization we didn't have, Cloudflare's MCP tools worked immediately.
+`workers/` started as a second runtime for the same product as `src/`
+(Node/Fastify/better-sqlite3) — it exists because getting a real test call
+reachable from outside the original sandbox needed a public HTTPS URL, and
+Cloudflare was the one platform available with no auth friction (no tunnel
+binary available, Vercel needed authorization that wasn't there, Cloudflare's
+MCP tools worked immediately). Since then the two have diverged: `workers/`
+became — and stayed — the actual live product, now including an entire
+lead-generation product (`leadgen/`, `youtube/`, `email/`, `assistant/`,
+`auth/`) that only ever existed here, never in `src/`. See
+[CLAUDE.md](../CLAUDE.md) for the current shape. What follows below is why
+this runtime is built on Hono/D1/Durable Objects instead of
+Fastify/better-sqlite3/in-memory state — still accurate, still the
+foundation everything since has been built on, just no longer "in-progress
+port" framing.
 
 ## Why not just reuse `src/`
 
