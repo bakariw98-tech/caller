@@ -74,4 +74,29 @@ describe('ASSISTANT_TOOL_DEFINITIONS', () => {
     const def = ASSISTANT_TOOL_DEFINITIONS.find((d) => d.name === 'get_prospect_transcript');
     expect(def!.description.toLowerCase()).toMatch(/call_recap/);
   });
+
+  // The actual bug this locks in: a creator asking a broad "what's my
+  // emails" was left to the model chaining list_prospects ->
+  // get_prospect_transcript per person itself, which is exactly what did
+  // NOT work in practice. get_recent_transcripts needs no id — it is the
+  // single-call answer to that broad question.
+  it('get_recent_transcripts needs no prospect id — it covers every lead in one call', () => {
+    const def = ASSISTANT_TOOL_DEFINITIONS.find((d) => d.name === 'get_recent_transcripts');
+    expect(def).toBeTruthy();
+    const schema = def!.inputSchema as { required?: string[]; properties: Record<string, unknown> };
+    expect(schema.required ?? []).not.toContain('prospect_id');
+    expect(Object.keys(schema.properties)).not.toContain('prospect_id');
+  });
+
+  it('get_prospect_transcript and get_recent_transcripts each point the model at the other for the wrong case', () => {
+    const specific = ASSISTANT_TOOL_DEFINITIONS.find((d) => d.name === 'get_prospect_transcript')!;
+    const broad = ASSISTANT_TOOL_DEFINITIONS.find((d) => d.name === 'get_recent_transcripts')!;
+    expect(specific.description).toMatch(/get_recent_transcripts/);
+    expect(broad.description.toLowerCase()).toMatch(/get_prospect_transcript/);
+  });
+
+  it('get_recent_transcripts also warns that a call_recap message is not the prospect\'s own words', () => {
+    const def = ASSISTANT_TOOL_DEFINITIONS.find((d) => d.name === 'get_recent_transcripts');
+    expect(def!.description.toLowerCase()).toMatch(/call_recap/);
+  });
 });

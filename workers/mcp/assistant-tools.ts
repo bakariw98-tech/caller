@@ -78,18 +78,40 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'get_prospect_transcript',
     description:
-      'The exact email transcript with one lead — every message, both directions, verbatim, oldest first. This ' +
-      'is not the extracted summary list_prospects already gives you (situation, real problem, goal) — it is the ' +
-      'actual words exchanged, for when the creator asks what was literally said. Pass the prospect_id from ' +
-      'list_prospects or search — never a typed-out address. A message whose kind is call_recap is the AI\'s own ' +
-      'internal recap of a phone call, not something the prospect wrote — read it back as your own notes, never ' +
-      'quote it as their words.',
+      'The exact email transcript with ONE specific lead — every message, both directions, verbatim, oldest ' +
+      'first. Use this when the creator names or has already identified a particular person ("what did I say to ' +
+      'Jordan", "show me my thread with the one who clicked the offer"). For anything broader — "what\'s my ' +
+      'emails", "read me my conversations", "show me what people have been writing in" — use ' +
+      'get_recent_transcripts instead; it needs no id and covers everyone at once. This is not the extracted ' +
+      'summary list_prospects already gives you (situation, real problem, goal) — it is the actual words ' +
+      'exchanged. Pass the prospect_id from list_prospects or search — never a typed-out address. A message whose ' +
+      'kind is call_recap is the AI\'s own internal recap of a phone call, not something the prospect wrote — ' +
+      'read it back as your own notes, never quote it as their words.',
     inputSchema: {
       type: 'object',
       properties: {
         prospect_id: { type: 'string', description: 'The prospect id, from list_prospects or search — never a typed-out address.' },
       },
       required: ['prospect_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'get_recent_transcripts',
+    description:
+      'Every recent email, across ALL leads at once — no id needed. This is the tool for a broad ask like ' +
+      '"what\'s my emails", "read me my conversations", or "what has everyone been writing in about" — do not ' +
+      'try to answer that by calling list_prospects and then get_prospect_transcript in a loop; call this once ' +
+      'instead. Returns real messages, verbatim, newest first, each one labeled with who it is with. Capped at a ' +
+      'sane limit rather than truly everything ever sent — if the creator wants the complete history with one ' +
+      'specific person, use get_prospect_transcript for that person instead. A message whose kind is call_recap ' +
+      "is the AI's own internal recap of a phone call, not something the prospect wrote — read it back as your " +
+      'own notes, never quote it as their words.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', description: 'Max messages to return, newest first, across every lead combined. Defaults to 60, max 200.' },
+      },
       additionalProperties: false,
     },
   },
@@ -297,6 +319,8 @@ export async function callAssistantTool(
       return listProspects(ctx, args);
     case 'get_prospect_transcript':
       return getProspectTranscript(ctx, args);
+    case 'get_recent_transcripts':
+      return getRecentTranscripts(ctx, args);
     case 'edit_knowledge_item':
       return editKnowledgeItem(ctx, args);
     case 'delete_knowledge_item':
@@ -459,6 +483,30 @@ async function getProspectTranscript(ctx: AssistantToolContext, args: Record<str
     .all<Record<string, unknown>>(prospectId, ctx.session.creator_id);
 
   return { data: { prospect_email: prospect.email, messages: rows, count: rows.length } };
+}
+
+/**
+ * The broad counterpart to get_prospect_transcript: "what's my emails"
+ * needs one call across every lead, not the model chaining
+ * list_prospects → get_prospect_transcript per person itself (fragile,
+ * and expensive in tool calls for a creator with any real volume).
+ * creator_id scoping happens in the WHERE clause directly rather than a
+ * separate existence check, since there is no single prospect id to look
+ * up first.
+ */
+async function getRecentTranscripts(ctx: AssistantToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+  const rows = await ctx.db
+    .prepare(
+      `SELECT m.direction, m.subject, m.body, m.kind, m.created_at, p.email AS prospect_email, o.name AS routed_offer_name
+         FROM prospect_messages m
+         JOIN prospects p ON p.id = m.prospect_id
+         LEFT JOIN offers o ON o.id = m.routed_offer_id
+        WHERE m.creator_id = ?
+        ORDER BY m.created_at DESC
+        LIMIT ?`,
+    )
+    .all<Record<string, unknown>>(ctx.session.creator_id, limitOf(args.limit, 60, 200));
+  return { data: { messages: rows, count: rows.length } };
 }
 
 /** A string arg to store, or null to clear the column, or undefined to leave it untouched. */
