@@ -76,6 +76,24 @@ export const ASSISTANT_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'get_prospect_transcript',
+    description:
+      'The exact email transcript with one lead — every message, both directions, verbatim, oldest first. This ' +
+      'is not the extracted summary list_prospects already gives you (situation, real problem, goal) — it is the ' +
+      'actual words exchanged, for when the creator asks what was literally said. Pass the prospect_id from ' +
+      'list_prospects or search — never a typed-out address. A message whose kind is call_recap is the AI\'s own ' +
+      'internal recap of a phone call, not something the prospect wrote — read it back as your own notes, never ' +
+      'quote it as their words.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prospect_id: { type: 'string', description: 'The prospect id, from list_prospects or search — never a typed-out address.' },
+      },
+      required: ['prospect_id'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'edit_knowledge_item',
     description:
       'Change the question, the answer, or where the free material stops (the boundary) for one knowledge item. ' +
@@ -277,6 +295,8 @@ export async function callAssistantTool(
       return listOffers(ctx);
     case 'list_prospects':
       return listProspects(ctx, args);
+    case 'get_prospect_transcript':
+      return getProspectTranscript(ctx, args);
     case 'edit_knowledge_item':
       return editKnowledgeItem(ctx, args);
     case 'delete_knowledge_item':
@@ -406,6 +426,39 @@ async function listProspects(ctx: AssistantToolContext, args: Record<string, unk
     )
     .all<Record<string, unknown>>(ctx.session.creator_id, limitOf(args.limit));
   return { data: { prospects: rows, count: rows.length } };
+}
+
+/**
+ * Same prospect_id-only resolution as emailProspect — the model gets an id
+ * from list_prospects/search, never an address, and everything else
+ * (which lead this actually is, whether it belongs to this creator) is
+ * looked up server-side.
+ */
+async function getProspectTranscript(ctx: AssistantToolContext, args: Record<string, unknown>): Promise<ToolResult> {
+  const prospectId = typeof args.prospect_id === 'string' ? args.prospect_id.trim() : '';
+  if (!prospectId) return { data: { error: 'prospect_id is required.' }, isError: true };
+
+  const prospect = await ctx.db
+    .prepare('SELECT id, email FROM prospects WHERE id = ? AND creator_id = ?')
+    .get<{ id: string; email: string }>(prospectId, ctx.session.creator_id);
+  if (!prospect) {
+    return {
+      data: { error: 'No lead with that id for this creator. Look them up with list_prospects first — do not guess an id.' },
+      isError: true,
+    };
+  }
+
+  const rows = await ctx.db
+    .prepare(
+      `SELECT m.direction, m.subject, m.body, m.kind, m.created_at, o.name AS routed_offer_name
+         FROM prospect_messages m
+         LEFT JOIN offers o ON o.id = m.routed_offer_id
+        WHERE m.prospect_id = ? AND m.creator_id = ?
+        ORDER BY m.created_at ASC`,
+    )
+    .all<Record<string, unknown>>(prospectId, ctx.session.creator_id);
+
+  return { data: { prospect_email: prospect.email, messages: rows, count: rows.length } };
 }
 
 /** A string arg to store, or null to clear the column, or undefined to leave it untouched. */

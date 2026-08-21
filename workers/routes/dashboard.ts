@@ -178,6 +178,13 @@ export const PAGE = /* html */ `<!doctype html>
   .status.ok { color: #16643a; } .status.err { color: #b3261e; } .status.busy { color: #7d7a73; }
   .src { border: 1px dashed #dcd9d3; border-radius: 10px; padding: .8rem .9rem; margin-bottom: .6rem; }
   .reply { background: #f7f6f2; border-radius: 8px; padding: .8rem .9rem; white-space: pre-wrap; font-size: .89rem; margin-top: .7rem; }
+  .msg { border: 1px solid #e9e7e2; border-radius: 10px; padding: .7rem .85rem; margin-bottom: .55rem; }
+  .msg .mhead { display: flex; justify-content: space-between; align-items: baseline; gap: .6rem; margin-bottom: .35rem; flex-wrap: wrap; }
+  .msg .mwho { font-weight: 700; font-size: .82rem; }
+  .msg .mwho.recap { color: #8a6100; }
+  .msg .mwhen { font-size: .76rem; color: #8e8b84; white-space: nowrap; }
+  .msg .msubject { font-size: .8rem; color: #6d6d72; font-style: italic; margin-bottom: .3rem; }
+  .msg .mbody { white-space: pre-wrap; font-size: .88rem; color: #3a3934; }
   table { width: 100%; border-collapse: collapse; font-size: .87rem; }
   th, td { text-align: left; padding: .45rem .3rem; border-bottom: 1px solid #f0eee9; }
   th { color: #8e8b84; font-weight: 600; font-size: .8rem; }
@@ -1126,6 +1133,24 @@ export const PAGE = /* html */ `<!doctype html>
     return epochSeconds ? field(label, new Date(epochSeconds * 1000).toLocaleDateString()) : '';
   }
 
+  // ---- transcript (the actual email exchange, verbatim — distinct from
+  // the extracted "Full record" fields above, which are the AI's
+  // understanding OF the conversation, not the conversation itself).
+  function renderTranscript(messages) {
+    if (!messages.length) return '<p class="note">No messages recorded yet.</p>';
+    return messages.map(function (m) {
+      var isRecap = m.kind === 'call_recap';
+      var who = m.direction === 'inbound' ? 'They wrote' : (isRecap ? 'Internal call recap' : 'We replied');
+      var when = new Date(m.created_at * 1000).toLocaleString();
+      return '<div class="msg">' +
+        '<div class="mhead"><span class="mwho' + (isRecap ? ' recap' : '') + '">' + esc(who) + '</span><span class="mwhen">' + esc(when) + '</span></div>' +
+        (m.subject ? '<div class="msubject">' + esc(m.subject) + '</div>' : '') +
+        '<div class="mbody">' + esc(m.body) + '</div>' +
+        (m.routed_offer_name ? '<p class="note" style="margin-top:.4rem">Routed to: ' + esc(m.routed_offer_name) + '</p>' : '') +
+        '</div>';
+    }).join('');
+  }
+
   function loadProspects() {
     return api('/api/creators/' + CID + '/prospects').then(function (d) {
       var box = el('prospects');
@@ -1142,7 +1167,10 @@ export const PAGE = /* html */ `<!doctype html>
             (p.clicked_offer ? ' <span class="pill on">clicked</span>' : '') + '</h3>' +
           '<p class="trunc">' + esc(p.blocked_on || p.situation || 'No situation captured yet') +
             ' · ' + p.exchanges + ' email' + (p.exchanges === 1 ? '' : 's') + ' · score <b>' + p.score + '</b></p>' +
-          '<div class="row" style="margin-top:.5rem"><button class="danger p-toggle" type="button">Full record</button></div>' +
+          '<div class="row" style="margin-top:.5rem">' +
+            '<button class="danger p-toggle" type="button">Full record</button>' +
+            '<button class="danger p-transcript-toggle" type="button">View transcript</button>' +
+          '</div>' +
           '<div class="p-detail" style="display:none;margin-top:.6rem">' +
             field('Situation', p.situation) +
             field('Real problem', p.diagnosed_problem) +
@@ -1157,10 +1185,28 @@ export const PAGE = /* html */ `<!doctype html>
             field('Offer clicked', p.clicked_offer ? 'Yes' : 'No') +
             fieldDate('First seen', p.first_seen_at) +
             fieldDate('Qualified since', p.qualified_at) +
-          '</div>';
+          '</div>' +
+          '<div class="p-transcript" style="display:none;margin-top:.6rem"></div>';
         n.querySelector('.p-toggle').onclick = function () {
           var detail = n.querySelector('.p-detail');
           detail.style.display = detail.style.display === 'none' ? 'block' : 'none';
+        };
+        var transcriptBox = n.querySelector('.p-transcript');
+        var transcriptLoaded = false;
+        n.querySelector('.p-transcript-toggle').onclick = function () {
+          var willShow = transcriptBox.style.display === 'none';
+          if (willShow && !transcriptLoaded) {
+            transcriptBox.innerHTML = '<p class="note">Loading…</p>';
+            transcriptBox.style.display = 'block';
+            api('/api/creators/' + CID + '/prospects/' + p.id + '/messages').then(function (d2) {
+              transcriptLoaded = true;
+              transcriptBox.innerHTML = renderTranscript(d2.messages || []);
+            }).catch(function (e) {
+              transcriptBox.innerHTML = '<p class="note">Could not load: ' + esc(e.message) + '</p>';
+            });
+          } else {
+            transcriptBox.style.display = willShow ? 'block' : 'none';
+          }
         };
         box.appendChild(n);
       });

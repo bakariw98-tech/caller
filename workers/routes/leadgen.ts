@@ -995,6 +995,43 @@ leadgenRoute.get('/api/creators/:id/prospects', async (c) => {
 });
 
 /**
+ * The exact email transcript for one lead — every message, both
+ * directions, verbatim, oldest first. Distinct from the "full record"
+ * (situation/goal/blocked_on/etc.) shown elsewhere: that's the AI's
+ * EXTRACTED understanding of the conversation, this is the conversation
+ * itself. A creator asking "what did we actually say to them" needs the
+ * second thing, not a summary of it.
+ *
+ * kind distinguishes a real prospect-authored 'reply' from a 'call_recap'
+ * row — the internal recap a post-call follow-up email is written from,
+ * never something the prospect actually said (see pipeline.ts's own
+ * comment on why that distinction matters). Surfaced here so the creator
+ * reading a transcript never mistakes one for the other.
+ */
+leadgenRoute.get('/api/creators/:id/prospects/:prospectId/messages', async (c) => {
+  const db = wrapD1(c.env.DB);
+  const creatorId = c.req.param('id');
+  const prospectId = c.req.param('prospectId');
+
+  const prospect = await db
+    .prepare('SELECT id, email FROM prospects WHERE id = ? AND creator_id = ?')
+    .get<{ id: string; email: string }>(prospectId, creatorId);
+  if (!prospect) return c.json({ error: 'prospect not found' }, 404);
+
+  const rows = await db
+    .prepare(
+      `SELECT m.id, m.direction, m.subject, m.body, m.kind, m.created_at, o.name AS routed_offer_name
+         FROM prospect_messages m
+         LEFT JOIN offers o ON o.id = m.routed_offer_id
+        WHERE m.prospect_id = ? AND m.creator_id = ?
+        ORDER BY m.created_at ASC`,
+    )
+    .all(prospectId, creatorId);
+
+  return c.json({ prospect_email: prospect.email, messages: rows });
+});
+
+/**
  * The same lead record as GET /prospects, as a file. See csv.ts for why the
  * escaping matters here specifically — every field below is free text
  * written by a cold prospect, not app-generated data.

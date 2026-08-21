@@ -57,4 +57,21 @@ describe('ASSISTANT_TOOL_DEFINITIONS', () => {
     const def = ASSISTANT_TOOL_DEFINITIONS.find((d) => d.name === 'email_prospect');
     expect(def!.description.toLowerCase()).toMatch(/irreversible|confirm|yes/);
   });
+
+  // Same honesty guard as email_prospect, same reason: the model resolves a
+  // lead by id, looked up from list_prospects/search, never types out or
+  // guesses an address itself.
+  it('get_prospect_transcript accepts a prospect id but never an address', () => {
+    const def = ASSISTANT_TOOL_DEFINITIONS.find((d) => d.name === 'get_prospect_transcript');
+    expect(def).toBeTruthy();
+    const props = Object.keys((def!.inputSchema as { properties: Record<string, unknown> }).properties);
+    expect(props).toContain('prospect_id');
+    expect(props.some((p) => /email|address|to\b/i.test(p))).toBe(false);
+    expect((def!.inputSchema as { additionalProperties: boolean }).additionalProperties).toBe(false);
+  });
+
+  it('get_prospect_transcript warns that a call_recap message is not the prospect\'s own words', () => {
+    const def = ASSISTANT_TOOL_DEFINITIONS.find((d) => d.name === 'get_prospect_transcript');
+    expect(def!.description.toLowerCase()).toMatch(/call_recap/);
+  });
 });
