@@ -1,147 +1,135 @@
 # Caller
 
-A white-labeled coaching platform. A creator's curriculum becomes a phone number
-their customers can call whenever they get stuck.
+An AI that turns a content creator's own material into leads and sales —
+without the creator doing the manual work.
 
-The customer never interacts with this platform. They call their instructor's
-coach, on their instructor's number, and get help with their instructor's
-material.
+A creator connects their content and their inbox. From there, every person
+who writes in gets a reply grounded in what that creator has actually
+taught, gets pointed at a real offer only when it's a genuine fit, and — if
+they're a serious lead — gets invited onto a live AI phone call for real
+discovery before anything is pitched. The creator watches all of it happen
+from a dashboard built around what their audience is actually doing, not
+internal plumbing like item counts.
 
-```
-creator expertise + structured curriculum + persistent customer state + real-time voice
-```
+Live at **`https://caller-coach.bakariw98.workers.dev`**.
+
+## How it actually works
+
+**Knowledge, from their real content.** A creator pastes material they
+already have — transcripts, an FAQ, a newsletter, a framework — or connects
+their YouTube channel and every video gets tiered, fetched, and broken into
+problem-and-answer pairs in the background. Nothing is invented: if the
+material doesn't cover something, it's left out rather than filled in.
+(`workers/leadgen/extract.ts`, `workers/youtube/ingest.ts`)
+
+**Every inbound email gets a grounded reply.** The creator connects Gmail;
+every email that comes in is answered from that knowledge base only, in
+the creator's own voice, never from general knowledge. The conversation
+builds a real picture of who this person is — their situation, their real
+problem, their goal, what's stopping them — turn by turn, so a returning
+lead never has to re-explain themselves. (`workers/leadgen/reply.ts`,
+`pipeline.ts`)
+
+**Offers, routed on genuine fit — not label-matching.** The structured
+fields a creator fills in for an offer (who it's for, when they'd
+recommend it) are treated as evidence of how that creator has actually
+sold it before, not eligibility rules a lead's words get checked against.
+Someone who technically matches a label can still be a bad fit if their
+real problem is different; someone who doesn't match it word-for-word can
+still be exactly right. Email stays deliberately conservative about this —
+it's one shot, with no chance to correct a misread.
+(`workers/leadgen/call-prompt.ts`, `workers/leadgen/prompt.ts`)
+
+**Serious leads get a real phone call.** Instead of a written reply, an
+interested lead can get a warm invitation to call — and the call itself is
+the actual sales conversation: real discovery, a diagnosis they confirm out
+loud, and only then an offer that's been honestly earned.
+(`workers/telephony/`, `workers/mcp/qual-tools.ts`)
+
+**The dashboard shows what the AI actually did for the creator's
+audience.** Not "142 knowledge items" — how many people wrote in, a funnel
+(new leads, qualified, offers recommended, link clicks, calls accepted)
+with real period-over-period deltas, a 30-day activity trend, and a
+breakdown of what people are actually asking about, pulled straight from
+real extracted topic tags. Every lead's full record is there too,
+including the exact email transcript, verbatim. Sidebar nav on desktop,
+a hamburger drawer on mobile, all behind real per-creator login — no more
+shared admin key in the URL. (`workers/routes/dashboard.ts`,
+`workers/leadgen/activity.ts`)
+
+**Connect your own agent.** The same tool set the dashboard's built-in
+voice assistant uses is exposed as an MCP server, so a creator can run
+their whole business from Claude Desktop or their own agent instead of the
+web page: read tools (the numbers, the knowledge base, the offers, the
+leads, exact transcripts for one lead or everyone at once) and write tools
+(edit knowledge, manage offers, update the profile, toggle voice
+escalation, send a real email). Every tool is scoped to that one creator by
+construction, and anything irreversible requires reading back exactly what
+it's about to do and getting a real yes first.
+(`workers/mcp/assistant-tools.ts`, `workers/routes/assistant.ts`)
+
+## Honesty is the architecture, not a feature
+
+The one idea that shows up in every piece above: nothing is ever invented.
+No fabricated metric on the dashboard, no guessed price on an offer, no
+email address the model wasn't actually given, no offer match that isn't
+grounded in what a lead really said. Where the product doesn't know
+something, it says so rather than filling the gap with something
+plausible-sounding — the same standard a creator would hold themselves to
+with their own audience.
 
 ## Two runtimes
 
-- **`src/`** — Node, Fastify, better-sqlite3. The reference implementation;
-  everything below in this README describes it.
-- **`workers/`** — Cloudflare Workers, Hono, D1, Durable Objects. A second
-  runtime for the same product, built to get a real test call reachable from
-  a public URL without standing up separate hosting. The call path (webhook,
-  live session, MCP tools, billing) is complete and D1-seeded with a working
-  demo creator; the customer self-serve and dashboard pages aren't ported yet.
-  See [docs/DEPLOY.md](docs/DEPLOY.md) to ship it and
-  [docs/CLOUDFLARE-PORT-NOTES.md](docs/CLOUDFLARE-PORT-NOTES.md) for what
-  differs from `src/` and why.
+- **`workers/`** — the real product, live in production. Cloudflare
+  Workers, Hono, D1, Durable Objects. Everything described above lives
+  here, and is what's actually deployed.
+- **`src/`** — an earlier prototype for a different, now-superseded idea:
+  a white-labeled coaching platform where a creator's *curriculum* became
+  a phone number their *students* called when stuck. Not what's deployed,
+  not under active development. Kept for reference.
 
 ## Running it
 
 ```bash
+cd workers
 npm install
-cp .env.example .env          # fill in XAI_API_KEY and PUBLIC_BASE_URL
-npm run migrate
-npm run seed                  # a complete demo creator, course and customer
-npm run dev
+npx wrangler dev
 ```
 
-`npm run seed` prints a creator id, a landing page at `/c/open-crumb` and a
-dashboard link. The demo works fully without an xAI key — everything except
-answering an actual phone call.
+The live D1 database and secrets are already provisioned for the deployed
+creator; see [docs/DEPLOY.md](docs/DEPLOY.md) for the deploy path (note:
+its demo-creator walkthrough predates this product and is stale — the
+webhook/secrets mechanics it describes still apply, the specific creator
+it references does not).
 
-To take real calls, `PUBLIC_BASE_URL` must be a public HTTPS host (an ngrok or
-cloudflared tunnel in development). xAI needs to reach **two** endpoints on it:
-the webhook, and the MCP tool endpoint.
+A new creator is onboarded by the operator today, via `/onboard` — public
+self-serve signup isn't built yet. Their login (email + password) is set
+at that point; from there they run everything themselves from
+`/dashboard/:creatorId` or their own connected agent.
 
 ```bash
-npm run provision -- --creator <creator_id> --area 415
+npm test                          # one suite, repo root, covers workers/ and src/ both
+cd workers && npx tsc --noEmit    # workers/ typecheck (its own tsconfig)
 ```
 
-This registers the number and stores the webhook signing secret, which xAI
-returns exactly once and never again.
+## What's genuinely unfinished
 
-### Loading a curriculum
-
-```bash
-npm run ingest -- --file examples/curriculum-sample.md --audit-only
-npm run ingest -- --creator <creator_id> --file examples/curriculum-sample.md
-```
-
-The authoring format is documented at the top of
-`src/curriculum/parse-markdown.ts`. The audit runs either way and **blocks**
-import when steps lack instructions or an expected result — see below.
-
-### Tests
-
-```bash
-npm test          # 57 tests
-npm run typecheck
-```
-
-## What is built
-
-Phase 1 and Phase 2 of the build order, end to end.
-
-- **Ingestion** that preserves the `Course → Module → Lesson → Step` tree, with
-  troubleshooting attached to the step where it bites, and a structural audit
-  that refuses to publish a flattened course.
-- **Webhook receiver** with Standard Webhooks signature verification against raw
-  bytes, replay protection, and per-number signing secrets.
-- **Session bridge** over `wss://api.x.ai/v1/realtime?call_id=` — configuration,
-  steering, live metering, warnings, and hangup.
-- **Coach behaviour**: grounding and refusal rules ahead of everything else,
-  one-action-at-a-time coaching, native SIP REFER escalation.
-- **State transitions** rather than conversation history, so a returning caller
-  never re-explains themselves.
-- **Identity**: caller ID identifies, SMS OTP verifies, unknown numbers get a
-  bounded call that reveals nothing.
-- **Credits**: prepaid seconds scoped per creator, manual top-up only,
-  promotional budgets that can only spend the creator's own prepaid money.
-- **Creator dashboard** with business metrics and curriculum intelligence.
-
-Phase 3 is partially present (onboarding exists as an API, dashboard is built);
-Phase 4 — revenue share and payouts — is not started. The price floor it depends
-on is enforced.
-
-## The five risks, and where each is addressed
-
-**1. Per-minute cost.** Retrieval runs through MCP, where tool output is exempt
-from the text meter; exactly one billable text item is seeded per call; all
-mid-call steering uses the exempt `response.create`; `reasoning.effort` defaults
-to `none`. Both retail and cost are recorded per call so margin is measured
-rather than assumed. → [docs/COST-MODEL.md](docs/COST-MODEL.md)
-
-**2. Grounding failure.** The refusal path was built before the features. The
-prompt puts grounding above all other instructions; `search_curriculum` returns
-an explicit refusal instruction when nothing matches; `diagnose_problem` returns
-only genuine symptom overlaps and flags anything pulled from elsewhere in the
-course as needing a check. Escalation is native. Six tests cover the refusal
-paths.
-
-**3. Structure loss in ingestion.** `auditStructure()` treats a step with no
-instructions or no expected result as a blocking error, on the grounds that a
-coach which cannot tell whether your result is wrong is a chatbot. Zero steps
-after parsing is a blocking error by name. `--force` stores a draft that cannot
-go live.
-
-**4. Webhook signing secret.** Persisted in the same call that provisions the
-number; provisioning refuses to store a number whose secret it cannot find.
-
-**5. Trial abuse.** Promotional grants bind to a verified customer account, not
-to a call, with a per-customer cap and a reservation check so a pool cannot be
-over-promised across simultaneous first calls.
-
-## Known gaps
-
-- **Creator console auth is a shared `ADMIN_TOKEN`.** Fine for onboarding
-  creator #1 by hand; real accounts are needed before self-serve.
-- **Payments are simulated.** `POST /c/:slug/topup` credits the wallet directly.
-  A real deployment puts the creator's payment processor in front of it, with
-  the creator's business name on the descriptor and receipt.
-- **SMS needs a provider.** xAI sends voice, not messages. `identity/sms.ts` has
-  a one-method interface and prints codes to stdout by default.
-- **SQLite.** Correct for one creator; the schema is already multi-tenant, so
-  the move to Postgres is a driver swap rather than a redesign.
-- **Several xAI API details are unverified against a live call** — audio
-  duration events on SIP sessions, the exact `reasoning.effort` key shape, and
-  the `POST /v2/phone-numbers` response schema. Each is listed with what the
-  code assumes and how to correct it in
-  [docs/XAI-API-NOTES.md](docs/XAI-API-NOTES.md).
+- **No revenue attribution.** Cost per call/conversation is tracked; there
+  is no price-paid signal anywhere in the product, so no revenue number is
+  ever shown — deliberately, rather than approximating one.
+- **Topic tagging is lifetime-accumulated per lead, not dated per
+  message** — the dashboard's "what people are asking about" is a
+  reasonable approximation of "this period," not an exact one. See
+  `workers/leadgen/activity.ts`'s own comment on the tradeoff.
+- **Onboarding a new creator is still operator-driven**, not public
+  self-serve signup.
 
 ## Documentation
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — call flow, module map, and the
-  reasoning behind the tree, the transition log, and token-scoped tools
-- [docs/COST-MODEL.md](docs/COST-MODEL.md) — what meters, what doesn't, and how
-  to measure real cost per hour
-- [docs/XAI-API-NOTES.md](docs/XAI-API-NOTES.md) — verified behaviour, open
-  questions, and why outbound calling would need a second vendor
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/COST-MODEL.md](docs/COST-MODEL.md),
+  [docs/XAI-API-NOTES.md](docs/XAI-API-NOTES.md) — written for the `src/`
+  prototype; the underlying xAI API and cost-metering notes still apply to
+  `workers/`, the product framing in them does not.
+- [docs/DEPLOY.md](docs/DEPLOY.md) — the Cloudflare deploy path.
+- [docs/CLOUDFLARE-PORT-NOTES.md](docs/CLOUDFLARE-PORT-NOTES.md) — what
+  differs between the two runtimes and why `workers/` exists.
