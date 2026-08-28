@@ -1,0 +1,50 @@
+name = "caller-coach"
+main = "index.ts"
+compatibility_date = "2026-08-16"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "caller-coach"
+database_id = "36a74a8c-1399-4c55-8a1b-cb07b1f1d9a5"
+
+# Embeddings for semantic retrieval — see workers/leadgen/embeddings.ts.
+[ai]
+binding = "AI"
+
+[[durable_objects.bindings]]
+name = "CALL_SESSION"
+class_name = "CallSessionDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CallSessionDO"]
+
+# Polls every connected creator's Gmail inbox — see workers/email/poll.ts.
+# Every minute, the fastest a Cron Trigger can run: worst-case wait for a
+# prospect is under 60 seconds, and the cost is still a handful of quota
+# units against Gmail's 6,000/min-per-user budget. True instant delivery
+# would mean Gmail push (Pub/Sub) instead of polling at all — deferred, see
+# plan history, since it needs another manual Google Cloud console step and
+# a recurring subscription-renewal job.
+[triggers]
+crons = ["* * * * *"]
+
+# --- Non-secret vars. Secrets (XAI_API_KEY, MCP_TOKEN_SECRET, ADMIN_TOKEN,
+# XAI_WEBHOOK_SIGNING_SECRET) are NOT set here — see docs/DEPLOY.md, they go
+# in via `wrangler secret put` so they never end up in this file or in git. ---
+[vars]
+XAI_API_BASE = "https://api.x.ai"
+XAI_REALTIME_HOST = "api.x.ai"
+XAI_VOICE_MODEL = "grok-voice-latest"
+XAI_TEXT_MODEL = "grok-4.20-non-reasoning"
+# Set to this Worker's real URL after the first deploy (see docs/DEPLOY.md) —
+# xAI must be able to reach both /webhooks/xai and /mcp on it.
+PUBLIC_BASE_URL = "https://caller-coach.bakariw98.workers.dev"
+
+PLATFORM_MIN_PRICE_PER_MINUTE_CENTS = "50"
+PLATFORM_AUDIO_COST_PER_MINUTE_CENTS = "6"
+MAX_SESSION_SECONDS = "7200"
+LOW_BALANCE_WARNING_SECONDS = "120"
+FINAL_WARNING_SECONDS = "30"
+IDLE_TIMEOUT_MS = "12000"
