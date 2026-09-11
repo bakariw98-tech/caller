@@ -20,15 +20,19 @@ class_name = "CallSessionDO"
 tag = "v1"
 new_sqlite_classes = ["CallSessionDO"]
 
-# Polls every connected creator's Gmail inbox — see workers/email/poll.ts.
-# Every minute, the fastest a Cron Trigger can run: worst-case wait for a
-# prospect is under 60 seconds, and the cost is still a handful of quota
-# units against Gmail's 6,000/min-per-user budget. True instant delivery
-# would mean Gmail push (Pub/Sub) instead of polling at all — deferred, see
-# plan history, since it needs another manual Google Cloud console step and
-# a recurring subscription-renewal job.
+# DISABLED — see the user's explicit request to stop all autonomous/
+# unattended activity over billing concerns. This was the only cron in the
+# system: every minute it polled every connected creator's Gmail inbox and
+# auto-replied to anything new (a real xAI charge, no human review) and
+# drained the YouTube transcript/extraction/embedding queue (also real
+# charges). With this removed, nothing in the app runs on its own — every
+# remaining code path (a real phone call, a dashboard page load, an agent
+# calling an MCP tool) requires a live human action to trigger it.
+#
+# To re-enable: replace the empty array below with ["* * * * *"] and
+# redeploy (`cd workers && npx wrangler deploy`).
 [triggers]
-crons = ["* * * * *"]
+crons = []
 
 # --- Non-secret vars. Secrets (XAI_API_KEY, MCP_TOKEN_SECRET, ADMIN_TOKEN,
 # XAI_WEBHOOK_SIGNING_SECRET) are NOT set here — see docs/DEPLOY.md, they go
